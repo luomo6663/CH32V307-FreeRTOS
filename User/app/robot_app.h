@@ -4,7 +4,8 @@
 /*
  * Application bootstrap: hardware setup and RTOS task creation.
  *
- *   control task   100 Hz   CHASSIS_Update(), owns motor and encoder hardware
+ *   control task   100 Hz   chassis, servo command/motion and stepper updates
+ *   TIM3 CC4 ISR           commits servo frames and bank routing in low interval
  *   console task   on RX    command line, latches chassis commands
  *   telemetry task idle     periodic CSV stream, off by default
  */

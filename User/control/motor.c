@@ -4,6 +4,7 @@
 *******************************************************************************/
 
 #include "motor.h"
+#include <stddef.h>
 
 typedef struct
 {
@@ -75,6 +76,48 @@ static void Motor_SetPinMode(GPIO_TypeDef *port, uint16_t pin, GPIOMode_TypeDef 
     GPIO_Init(port, &gpio);
 }
 
+static uint8_t Motor_UsesPwmDir(void)
+{
+    return (s_mode == MOTOR_MODE_PWM_DIR) ? 1U : 0U;
+}
+
+static const char *Motor_PortName(GPIO_TypeDef *port)
+{
+    if(port == GPIOA)
+    {
+        return "PA";
+    }
+
+    if(port == GPIOB)
+    {
+        return "PB";
+    }
+
+    if(port == GPIOC)
+    {
+        return "PC";
+    }
+
+    if(port == GPIOD)
+    {
+        return "PD";
+    }
+
+    return "P?";
+}
+
+static uint8_t Motor_PinNumber(uint16_t pin)
+{
+    uint8_t number = 0U;
+
+    while((number < 16U) && ((pin & (uint16_t)(1U << number)) == 0U))
+    {
+        number++;
+    }
+
+    return number;
+}
+
 /*
  * Pushes the applied logical duty of one wheel to its two bridge inputs.
  * A compare value above ARR keeps a channel steadily high.
@@ -94,18 +137,23 @@ static void Motor_WriteBridge(uint8_t motor, int16_t duty)
     magnitude = (d < 0) ? -(int32_t)d : (int32_t)d;
     pulse = (uint16_t)((magnitude * (int32_t)s_pwm_period) / MOTOR_DUTY_MAX);
 
-    if(s_mode == MOTOR_MODE_PWM_DIR)
+    if(Motor_UsesPwmDir() != 0U)
     {
-        /* IN1 carries the PWM, IN2 is the static direction level. */
-        Motor_SetCompare(hw->tim, hw->ch_in1, (d > 0) ? pulse : 0U);
-
+        /*
+         * IN1 carries the PWM, IN2 is the static direction level. Reverse
+         * uses the inverted duty: while IN2 is high the bridge only reaches
+         * the motor when IN1 is low, so the high time is period - pulse.
+         */
         if(d < 0)
         {
             GPIO_SetBits(hw->port_in2, hw->pin_in2);
+            Motor_SetCompare(hw->tim, hw->ch_in1,
+                             (uint16_t)(s_pwm_period - pulse));
         }
         else
         {
             GPIO_ResetBits(hw->port_in2, hw->pin_in2);
+            Motor_SetCompare(hw->tim, hw->ch_in1, pulse);
         }
     }
     else
@@ -307,7 +355,7 @@ void MOTOR_Brake(uint8_t motor)
     /* A compare above ARR keeps a PWM channel steadily high. */
     Motor_SetCompare(s_hw[motor].tim, s_hw[motor].ch_in1, (uint16_t)(s_pwm_period + 1U));
 
-    if(s_mode == MOTOR_MODE_PWM_DIR)
+    if(Motor_UsesPwmDir() != 0U)
     {
         GPIO_SetBits(s_hw[motor].port_in2, s_hw[motor].pin_in2);
     }
@@ -329,7 +377,7 @@ void MOTOR_Coast(uint8_t motor)
 
     Motor_SetCompare(s_hw[motor].tim, s_hw[motor].ch_in1, 0U);
 
-    if(s_mode == MOTOR_MODE_PWM_DIR)
+    if(Motor_UsesPwmDir() != 0U)
     {
         GPIO_ResetBits(s_hw[motor].port_in2, s_hw[motor].pin_in2);
     }
@@ -394,6 +442,25 @@ void MOTOR_SetDriveMode(motor_mode_t mode)
 motor_mode_t MOTOR_GetDriveMode(void)
 {
     return s_mode;
+}
+
+uint8_t MOTOR_GetWiring(uint8_t motor, motor_wiring_t *out)
+{
+    if((motor >= MOTOR_COUNT) || (out == NULL))
+    {
+        return 0U;
+    }
+
+    out->timer       = (s_hw[motor].tim == TIM4) ? "TIM4" : "TIM2";
+    out->in1_port    = Motor_PortName(s_hw[motor].port_in1);
+    out->in1_pin     = Motor_PinNumber(s_hw[motor].pin_in1);
+    out->in1_channel = s_hw[motor].ch_in1;
+    out->in2_port    = Motor_PortName(s_hw[motor].port_in2);
+    out->in2_pin     = Motor_PinNumber(s_hw[motor].pin_in2);
+    out->in2_channel = s_hw[motor].ch_in2;
+    out->pwm_dir     = Motor_UsesPwmDir();
+
+    return 1U;
 }
 
 void MOTOR_SetInvert(uint8_t motor, uint8_t invert)

@@ -110,16 +110,37 @@
 /* ---------------- servo ---------------- */
 
 /*
- * PB5 = TIM3_CH2 after the TIM3 partial remap.
+ * Arm servos: PB4 = ARM_A (TIM3_CH1), PB5 = ARM_B (TIM3_CH2) and
+ * PB0 = ARM_C (TIM3_CH3) after the TIM3 partial remap. PD2 = ARM_SWITCH
+ * selects which servo bank the CH440R on the arm board feeds.
  *
  * TBS-K20 (Hangzhou Zhongling) is a PWM position servo:
  *   5-8.4 V, 50-330 Hz, 500-2500 us pulse, 1500 us center, 270 degrees.
  * The manual sweep stays inside a conservative 1000-2000 us range.
  */
-#define ROBOT_SERVO_PWM_FREQUENCY_HZ        50U
+#define ROBOT_SERVO_PWM_FREQUENCY_HZ        300U
 #define ROBOT_SERVO_SWEEP_MIN_US             1000U
 #define ROBOT_SERVO_SWEEP_MAX_US             2000U
 #define ROBOT_SERVO_SWEEP_PERIOD_MS          2000U
+
+/* Set to 1 when ARM_SWITCH low selects the left bank on your arm board. */
+#define ROBOT_SERVO_SIDE_INVERT              1U
+
+/* Logical order in each row: A, B, C. Board photo has five populated headers;
+ * their identities are not verified yet. 0x07 keeps all schematic routes
+ * available for mapping; clear the missing header's bit after a continuity test.
+ * VERIFIED is informational, never an electrical presence detector. */
+#define ROBOT_SERVO_RIGHT_INSTALLED_MASK     0x07U
+#define ROBOT_SERVO_LEFT_INSTALLED_MASK      0x07U
+#define ROBOT_SERVO_MAP_VERIFIED             0U
+#define ROBOT_SERVO_DEFAULT_SIDE_RIGHT       1U
+/* Bench firmware: one full-range cycle on the default arm after every reset. */
+#define ROBOT_SERVO_BOOT_TEST                1U
+#define ROBOT_SERVO_MIN_US_TABLE             {{500U,500U,500U},{500U,500U,500U}}
+#define ROBOT_SERVO_CENTER_US_TABLE          {{1500U,1500U,1500U},{1500U,1500U,1500U}}
+#define ROBOT_SERVO_MAX_US_TABLE             {{2500U,2500U,2500U},{2500U,2500U,2500U}}
+/* Table row 0 = right, row 1 = left. Times are bounded to avoid wraparound. */
+#define ROBOT_SERVO_MAX_MOTION_MS            600000U
 
 /* ---------------- stepper turntable ---------------- */
 
@@ -127,6 +148,8 @@
  * Single STEP/DIR driver on fixed pins:
  *   PA0 -> STEP (TIM5_CH1)
  *   PA1 -> DIR
+ *
+ * The power board labels the same two lines STEP_PH (PA0) and STEP_EN (PA1).
  *
  * STEPS_PER_REV is the number of driver pulses for one full turntable
  * revolution. It already includes microstepping and any gear ratio:

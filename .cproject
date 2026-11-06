@@ -130,7 +130,7 @@
             </toolChain>
           </folderInfo>
           <sourceEntries>
-            <entry excluding="FreeRTOS/portable/Common/mpu_wrappers.c|Startup|Ld" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
+            <entry excluding="FreeRTOS/portable/Common/mpu_wrappers.c|tests|build|tmp|Startup|Ld" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
             <entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Ld"/>
             <entry excluding="startup_ch32v30x_D8.S" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Startup"/>
           </sourceEntries>

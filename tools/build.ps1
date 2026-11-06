@@ -14,7 +14,23 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not $ToolchainDir) {
-    $ToolchainDir = "E:\MounRiver\MounRiver_Studio2\resources\app\resources\win32\components\WCH\Toolchain\RISC-V Embedded GCC\bin"
+    $candidateDirs = @(
+        "E:\MounRiver\MounRiver_Studio3\resources\app\resources\win32\components\WCH\Toolchain\RISC-V Embedded GCC\bin",
+        "E:\MounRiver\MounRiver_Studio2\resources\app\resources\win32\components\WCH\Toolchain\RISC-V Embedded GCC\bin"
+    )
+    $pathCompiler = Get-Command "riscv-none-embed-gcc.exe" -ErrorAction SilentlyContinue
+    if ($pathCompiler) {
+        $candidateDirs += Split-Path -Parent $pathCompiler.Source
+    }
+    foreach ($candidateDir in $candidateDirs) {
+        if (Test-Path -LiteralPath (Join-Path $candidateDir "riscv-none-embed-gcc.exe")) {
+            $ToolchainDir = $candidateDir
+            break
+        }
+    }
+    if (-not $ToolchainDir) {
+        throw "WCH RISC-V toolchain not found. Pass -ToolchainDir or set MRS_TOOLCHAIN_DIR."
+    }
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path

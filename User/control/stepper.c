@@ -52,14 +52,52 @@ static int32_t Stepper_ClampAdd(int32_t base, int32_t delta)
     return (int32_t)value;
 }
 
-static void Stepper_SetPinMode(uint16_t pin, GPIOMode_TypeDef mode)
+static void Stepper_SetPinMode(GPIO_TypeDef *port, uint16_t pin,
+                               GPIOMode_TypeDef mode)
 {
     GPIO_InitTypeDef gpio = {0};
 
     gpio.GPIO_Pin = pin;
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
     gpio.GPIO_Mode = mode;
-    GPIO_Init(STEPPER_STEP_GPIO, &gpio);
+    GPIO_Init(port, &gpio);
+}
+
+static const char *Stepper_PortName(GPIO_TypeDef *port)
+{
+    if(port == GPIOA)
+    {
+        return "PA";
+    }
+
+    if(port == GPIOB)
+    {
+        return "PB";
+    }
+
+    if(port == GPIOC)
+    {
+        return "PC";
+    }
+
+    if(port == GPIOD)
+    {
+        return "PD";
+    }
+
+    return "P?";
+}
+
+static uint8_t Stepper_PinNumber(uint16_t pin)
+{
+    uint8_t number = 0U;
+
+    while((number < 16U) && ((pin & (uint16_t)(1U << number)) == 0U))
+    {
+        number++;
+    }
+
+    return number;
 }
 
 static void Stepper_WriteDirection(int8_t direction)
@@ -267,7 +305,7 @@ static uint8_t Stepper_ConfigureRate(uint32_t requested_hz)
 static void Stepper_ParkStepOutput(void)
 {
     TIM_CCxCmd(STEPPER_TIMER, TIM_Channel_1, TIM_CCx_Disable);
-    Stepper_SetPinMode(STEPPER_STEP_PIN, GPIO_Mode_Out_PP);
+    Stepper_SetPinMode(STEPPER_STEP_GPIO, STEPPER_STEP_PIN, GPIO_Mode_Out_PP);
     GPIO_ResetBits(STEPPER_STEP_GPIO, STEPPER_STEP_PIN);
 }
 
@@ -308,7 +346,7 @@ static void Stepper_StartConfiguredTimer(void)
     TIM_SetCounter(STEPPER_TIMER, 0U);
     TIM_ClearITPendingBit(STEPPER_TIMER, TIM_IT_Update);
 
-    Stepper_SetPinMode(STEPPER_STEP_PIN, GPIO_Mode_AF_PP);
+    Stepper_SetPinMode(STEPPER_STEP_GPIO, STEPPER_STEP_PIN, GPIO_Mode_AF_PP);
     TIM_CCxCmd(STEPPER_TIMER, TIM_Channel_1, TIM_CCx_Enable);
 
     s_park_pending = 0U;
@@ -739,6 +777,87 @@ void STEPPER_GetStatus(stepper_status_t *out)
     out->state = s_state;
 
     taskEXIT_CRITICAL();
+}
+
+void STEPPER_GetWiring(stepper_wiring_t *out)
+{
+    if(out == NULL)
+    {
+        return;
+    }
+
+    out->step_port    = Stepper_PortName(STEPPER_STEP_GPIO);
+    out->step_pin     = Stepper_PinNumber(STEPPER_STEP_PIN);
+    out->step_timer   = "TIM5";
+    out->step_channel = 1U;
+    out->dir_port     = Stepper_PortName(STEPPER_DIR_GPIO);
+    out->dir_pin      = Stepper_PinNumber(STEPPER_DIR_PIN);
+}
+
+uint8_t STEPPER_GetDirLevel(void)
+{
+    return (GPIO_ReadOutputDataBit(STEPPER_DIR_GPIO, STEPPER_DIR_PIN) != 0U)
+               ? 1U
+               : 0U;
+}
+
+uint8_t STEPPER_SetDirLevel(uint8_t level)
+{
+    uint8_t ok = 0U;
+
+    taskENTER_CRITICAL();
+
+    if(s_state == STEPPER_STATE_IDLE)
+    {
+        if(level != 0U)
+        {
+            GPIO_SetBits(STEPPER_DIR_GPIO, STEPPER_DIR_PIN);
+        }
+        else
+        {
+            GPIO_ResetBits(STEPPER_DIR_GPIO, STEPPER_DIR_PIN);
+        }
+
+        ok = 1U;
+    }
+
+    taskEXIT_CRITICAL();
+
+    return ok;
+}
+
+uint8_t STEPPER_SetStepLevel(uint8_t level)
+{
+    uint8_t ok = 0U;
+
+    taskENTER_CRITICAL();
+
+    if(s_state == STEPPER_STATE_IDLE)
+    {
+        Stepper_ParkStepOutput();
+
+        if(level != 0U)
+        {
+            GPIO_SetBits(STEPPER_STEP_GPIO, STEPPER_STEP_PIN);
+        }
+        else
+        {
+            GPIO_ResetBits(STEPPER_STEP_GPIO, STEPPER_STEP_PIN);
+        }
+
+        ok = 1U;
+    }
+
+    taskEXIT_CRITICAL();
+
+    return ok;
+}
+
+uint8_t STEPPER_GetStepLevel(void)
+{
+    return (GPIO_ReadOutputDataBit(STEPPER_STEP_GPIO, STEPPER_STEP_PIN) != 0U)
+               ? 1U
+               : 0U;
 }
 
 const char *STEPPER_StateName(stepper_state_t state)

@@ -10,7 +10,7 @@ FreeRTOS 和 WCH RISC-V 工具链，正常上电后电机保持滑行、舵机�
 - 四路正交编码器、独立 PI(D) 速度环、堵转和反馈反接保护
 - 麦轮正逆运动学、比例限速、里程计位姿积分
 - 100 Hz 固定周期控制任务，独立控制台和遥测任务
-- TBS-K20 舵机控制，支持固定脉宽和手动扫描
+- TBS-K20 舵机控制，支持左右选择、分路限位、平滑动作、姿态、扫描及 PWM 关闭
 - STEP/DIR 步进转台，支持角度、连续旋转、线性加减速和位置清零
 - CSV 或 VOFA+ FireWater 遥测
 - 保留接线标定和台架维护命令，不包含一次性排线与引脚探测固件
@@ -23,7 +23,7 @@ FreeRTOS 和 WCH RISC-V 工具链，正常上电后电机保持滑行、舵机�
 | 控制台 | USART3，PB10 TX / PB11 RX，115200-8-N-1 |
 | 电机 | W1 PA2/PA3，W2 PA15/PB3，W3 PD12/PD13，W4 PD14/PD15 |
 | 编码器 | W1 PC6/PC7，W2 PD1/PD3，W3 PA8/PA9，W4 PD9/PD11 |
-| 舵机 | PB5，TIM3_CH2，50 Hz |
+| 舵机 | ARM_A/B/C = PB4/PB5/PB0，TIM3_CH1/2/3，300 Hz；ARM_SWITCH = PD2，高电平右侧 |
 | 转台 | PA0 STEP/TIM5_CH1，PA1 DIR |
 
 电机、舵机和步进电机必须使用各自匹配的电源，并与控制板共地。不要让电机或
@@ -32,9 +32,9 @@ FreeRTOS 和 WCH RISC-V 工具链，正常上电后电机保持滑行、舵机�
 ## 安全启动
 
 - 四路电机上电滑行，不自动转动。
-- 舵机初始化后固定输出 1500 us 中位，不自动扫描。
+- 当前为舵机台架测试配置：每次上电选择右路（PD2 高电平），A/B/C 三路同时执行一次 1500→500→2500→1500 us 全范围动作，约 6 秒后保持中位。左臂不参与测试。
 - 步进转台保持停止，STEP 引脚停在低电平。
-- `SERVO SWEEP` 只用于显式请求的手动检查，正式使用时应避免舵机带负载扫动。
+- `SERVO HOLD` 可中止上电测试并保持当前输出；`SERVO OFF` 可关闭当前侧三路 PWM。将 `ROBOT_SERVO_BOOT_TEST` 改为 0 可取消下次上电自动动作。
 - DRIVE 模式命令超时、车轮缺反馈、堵转或反馈方向错误时自动停机并锁存故障。
 
 运行期的 PID、方向、编码器符号和转台 PPR 修改只保存在 RAM，复位后恢复
@@ -44,6 +44,11 @@ FreeRTOS 和 WCH RISC-V 工具链，正常上电后电机保持滑行、舵机�
 
 MounRiver Studio 可以直接导入工程并使用 `obj/` 构建目录。命令行构建不修改
 MounRiver 工程，产物写入 `build/`：
+
+IDE 工程已将 `tests/`、`build/`、`tmp/` 排除出固件编译。`tests/servo_host/`
+是电脑端测试，不能用 WCH 编译器编入单片机固件；它通过 `tools/test_servo.ps1`
+单独运行。命令行脚本优先查找已安装的 Studio 3 工具链，并兼容 Studio 2 和 PATH；
+显式参数 `-ToolchainDir` 或环境变量 `MRS_TOOLCHAIN_DIR` 优先。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1
@@ -131,7 +136,13 @@ text   data    bss    dec
 | 指令 | 说明 |
 | --- | --- |
 | `SERVO` | 查看舵机脉宽、扫描状态和定时器寄存器 |
-| `SERVO <500..2500>` | 设置舵机脉宽，`1500` 为中位 |
+| `SERVO <500..2500>` | 设置当前侧 B 路脉宽，`1500` 为默认中位 |
+| `SERVO SIDE R\|L` | 选择右侧/左侧 |
+| `SERVO CENTER ALL` | 当前侧所有已配置通道回各自中位 |
+| `SERVO MOVE A 1700 1000` | A 路用 1000 ms 移到 1700 us |
+| `SERVO POSE 1500 1600 1400 1000` | 当前侧三路同时平滑移动 |
+| `SERVO OFF ALL` | 当前侧停止 PWM（不切断舵机电源） |
+| `SERVO MAP` / `SERVO HELP` | 查看接口配置或完整命令 |
 | `SERVO SWEEP [ms]` | 手动启动 1000–2000 us 扫描 |
 | `SERVO HOLD` | 停止扫描并保持当前脉宽 |
 | `TURN` | 查看转台位置、目标、方向和速率 |
@@ -163,6 +174,7 @@ docs/                    架构、底盘、PID 和转台文档
 - [底盘、硬件和命令](docs/MOTOR_CONTROL.md)
 - [VOFA+ PID 调试](docs/VOFA_PID.md)
 - [步进转台](docs/STEPPER_TURNTABLE.md)
+- [舵机控制与实板接口核实](docs/SERVO_CONTROL.md)
 
 ## 上板验收
 

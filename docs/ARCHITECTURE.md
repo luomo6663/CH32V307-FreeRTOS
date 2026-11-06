@@ -46,7 +46,7 @@ User/
     wheel_control.[ch]    单轮速度环和故障保护
     mecanum.[ch]          麦轮运动学和里程计
     chassis.[ch]          模式机、命令锁存和状态汇总
-    servo.[ch]            舵机 PWM 和扫描
+    servo.[ch]            舵机命令队列、分侧状态、平滑运动及帧同步
     stepper.[ch]          STEP/DIR 转台控制
   app/
     robot_app.[ch]        任务创建、启动横幅和 RTOS 钩子
@@ -73,6 +73,8 @@ tools/
 - 只有 `control` 任务执行周期性实时控制。
 - 底盘运动命令通过 `CHASSIS_Command*()` 锁存，由 `control` 任务在下一周期应用。
 - 状态通过 `CHASSIS_GetStatus()` 整体拷贝，避免读取到半更新状态。
+- 舵机命令进入 16 条 FIFO，控制任务每周期应用一条并更新运动；TIM3_CH4 在
+  PWM 低电平区间提交下一帧比较值和 PD2 路由。左右侧状态分别保存。
 - USART3 中断只写接收 FIFO，不调用 FreeRTOS API。
 - 控制台输出由 `LOG_Lock()` / `LOG_Unlock()` 串行化。
 

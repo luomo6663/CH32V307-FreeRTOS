@@ -183,6 +183,7 @@ static void Console_PrintHelp(void)
     LOGF("X                     immediate coast, all wheels\r\n");
     LOGF("B                     brake, all wheels\r\n");
     LOGF("W <n> <duty>          open loop one wheel, n=1..4\r\n");
+    LOGF("WTEST <n> [duty] [ms] both directions, report encoder delta\r\n");
     LOGF("M <d1> <d2> <d3> <d4> open loop four wheels\r\n");
     LOGF("RAMP <n>              slew limit, duty per period, 0 = off\r\n");
     LOGF("INV <n> <0|1>         motor direction invert\r\n");
@@ -197,11 +198,17 @@ static void Console_PrintHelp(void)
     LOGF("POSE [R]              print or reset odometry\r\n");
     LOGF("VOFA <n|ALL|OFF> [ms] FireWater PID plot, n=1..4\r\n");
     LOGF("TELEM <on|off|ms|csv> telemetry stream control\r\n");
-    LOGF("SERVO [us|SWEEP [ms]|HOLD] servo control and diagnostics\r\n");
+    LOGF("SERVO [us]            servo status or set channel B pulse (500..2500 us)\r\n");
+    LOGF("SERVO HELP            servo side, channel, move, sweep and hold commands\r\n");
     LOGF("TURN <deg> [rpm]      relative turntable move\r\n");
     LOGF("TURN RUN <CW|CCW> [rpm] continuous turntable rotation\r\n");
     LOGF("TURN STOP|ZERO|PPR [n] turntable stop/zero/pulses-per-rev\r\n");
     LOGF("TURN PULSES <n> [hz]  direct stepper pulse move\r\n");
+    LOGF("PPRCAL <pulses> <deg> turntable ppr from a measured move\r\n");
+    LOGF("STEST [pulses] [hz]   stepper forward + reverse bench test\r\n");
+    LOGF("DIR <0|1>             force stepper DIR level (wiring check)\r\n");
+    LOGF("STEP <0|1>            force stepper STEP level (wiring check)\r\n");
+    LOGF("PINS                  motor, stepper and servo pin map\r\n");
     LOGF("P                     status\r\n");
     LOGF("CFG                   configuration summary\r\n");
     LOGF("H or ?                this help\r\n");
@@ -319,74 +326,215 @@ static void Console_PrintConfig(void)
          (CHASSIS_IsReady() != 0U) ? "yes" : "no");
 }
 
+/* "TIM2_CH3" or "GPIO", depending on whether IN2 kept a timer channel. */
+static const char *Console_ChannelText(const motor_wiring_t *motor, char *buffer,
+                                       size_t length, uint8_t in1)
+{
+    uint8_t channel = (in1 != 0U) ? motor->in1_channel : motor->in2_channel;
+
+    if(channel == 0U)
+    {
+        (void)snprintf(buffer, length, "GPIO");
+    }
+    else
+    {
+        (void)snprintf(buffer, length, "%s_CH%u", motor->timer,
+                       (unsigned int)channel);
+    }
+
+    return buffer;
+}
+
+/*
+ * Prints the live pin map so a bench check can confirm that the firmware pins
+ * match the power board (IN1/IN2 of MOTOR1..MOTOR4, STEP/DIR of the driver).
+ */
+static void Console_PrintPins(void)
+{
+    static const char *const board_channel[WHEEL_COUNT] =
+    {
+        "MOTOR3/ENC3", "MOTOR4/ENC4", "MOTOR1/ENC1", "MOTOR2/ENC2"
+    };
+    motor_wiring_t   motor;
+    stepper_wiring_t stepper;
+    char             in1[16];
+    char             in2[16];
+    uint8_t          wheel;
+
+    LOGF("wheel      IN1                 IN2                 mode     board\r\n");
+
+    for(wheel = 0U; wheel < WHEEL_COUNT; wheel++)
+    {
+        if(MOTOR_GetWiring(wheel, &motor) == 0U)
+        {
+            continue;
+        }
+
+        LOGF("%-10s %s%-3u %-11s %s%-3u %-11s %-8s %s\r\n",
+             s_wheel_name[wheel],
+             motor.in1_port, (unsigned int)motor.in1_pin,
+             Console_ChannelText(&motor, in1, sizeof(in1), 1U),
+             motor.in2_port, (unsigned int)motor.in2_pin,
+             Console_ChannelText(&motor, in2, sizeof(in2), 0U),
+             (motor.pwm_dir != 0U) ? "PWM+DIR" : "dual PWM",
+             board_channel[wheel]);
+    }
+
+    STEPPER_GetWiring(&stepper);
+    LOGF("stepper    %s%-3u %-11s DIR %s%u\r\n",
+         stepper.step_port, (unsigned int)stepper.step_pin,
+         stepper.step_timer, stepper.dir_port,
+         (unsigned int)stepper.dir_pin);
+    LOGF("servo      ARM_A/B/C = PB4/PB5/PB0 TIM3_CH1/2/3, PD2 = ARM_SWITCH\r\n");
+}
+
+/* Servo parsing is strict and independent of the legacy chassis parser. */
+static uint8_t Console_ServoNumber(const char *s, uint32_t max, uint32_t *out)
+{
+    uint32_t value = 0;
+    if(!s || !*s) return 0;
+    while(*s) {
+        uint32_t digit;
+        if(*s < '0' || *s > '9') return 0;
+        digit = (uint32_t)(*s++ - '0');
+        if(digit > max || value > (max - digit) / 10U) return 0;
+        value = value * 10U + digit;
+    }
+    *out = value;
+    return 1;
+}
+
+static uint8_t Console_ServoMask(const char *s)
+{
+    if(!s || strcmp(s, "ALL") == 0) return SERVO_MASK_ALL;
+    if(strcmp(s, "A") == 0) return 1;
+    if(strcmp(s, "B") == 0) return 2;
+    if(strcmp(s, "C") == 0) return 4;
+    return 0;
+}
+
+static void Console_PrintServoHelp(void)
+{
+    LOGF("SERVO                 pulse, motion, side and timer status\r\n");
+    LOGF("SERVO <500..2500>     set current side channel B pulse in us\r\n");
+    LOGF("SERVO SIDE <R|L>      select right or left arm\r\n");
+    LOGF("SERVO <A|B|C|ALL> <us>  set channel pulse\r\n");
+    LOGF("SERVO MOVE <A|B|C|ALL> <us> <ms>  smooth move\r\n");
+    LOGF("SERVO CENTER [A|B|C|ALL]  return to configured center\r\n");
+    LOGF("SERVO SWEEP [ms]      scan current side ALL, 1000..2000 us; default %lu ms\r\n",
+         (unsigned long)SERVO_SWEEP_PERIOD_MS);
+    LOGF("SERVO HOLD            stop scanning/moving, hold current pulse\r\n");
+    LOGF("SERVO OFF [A|B|C|ALL]  disable PWM output\r\n");
+    LOGF("SERVO POSE <A_us> <B_us> <C_us> <ms>  move three channels\r\n");
+    LOGF("SERVO SWEEP <A|B|C|ALL> <min_us> <max_us> <ms>  custom scan\r\n");
+    LOGF("us=500..2500 within configured limits; ms=0..%lu (sweep >=20)\r\n",
+         (unsigned long)ROBOT_SERVO_MAX_MOTION_MS);
+    LOGF("ALL=current bank installed channels; bare us=channel B; OK=queued\r\n");
+    LOGF("A=claw (PB4), B=middle (PB5), C=base (PB0); center=1500 us by default\r\n");
+}
+
 static void Console_PrintServo(void)
 {
-    servo_status_t status;
-    uint32_t       timer_hz;
-
-    SERVO_GetStatus(&status);
-
-    timer_hz = SystemCoreClock /
-               (uint32_t)(status.prescaler + 1U);
-
-    LOGF("servo pulse=%u us sweep=%u pwm=%lu Hz\r\n",
-         (unsigned int)status.pulse_us,
-         (unsigned int)status.sweeping,
-         (unsigned long)(timer_hz /
-                         (uint32_t)(status.period + 1U)));
-    LOGF("regs AFIO_PCFR1=%08lx GPIOB_CFGLR=%08lx\r\n",
-         (unsigned long)status.afio_pcfr1,
-         (unsigned long)status.gpio_cfglr);
-    LOGF("     TIM3_CTLR1=%04x PSC=%u ARR=%u CH2CVR=%u\r\n",
-         (unsigned int)status.timer_control,
-         (unsigned int)status.prescaler,
-         (unsigned int)status.period,
-         (unsigned int)status.compare);
+    servo_status_t s;
+    uint8_t b, c;
+    static const char *const motion[] = {"hold", "move", "sweep"};
+    SERVO_GetStatus(&s);
+    LOGF("servo config=%s map=%s pwm=%luHz queue=%u\r\n",
+         s.config_valid ? "ok" : "INVALID", ROBOT_SERVO_MAP_VERIFIED ? "verified" : "UNVERIFIED",
+         (unsigned long)(s.timer_hz / ((uint32_t)s.prescaler+1U) / ((uint32_t)s.period+1U)), s.queued);
+    LOGF("side requested=%s control=%s routed=%s switch=%u invert=%u\r\n",
+         s.requested_side_right ? "R" : "L", s.side_right ? "R" : "L",
+         s.hardware_side_right ? "R" : "L", (unsigned)((s.gpiod_odr >> 2)&1U),
+         (unsigned)ROBOT_SERVO_SIDE_INVERT);
+    for(b = 0; b < 2; b++) {
+        for(c = 0; c < 3; c++) {
+            uint16_t low=0, center=0, high=0;
+            SERVO_GetLimits(b,c,&low,&center,&high);
+            LOGF(" %s %s/%s PB%u cfg=%s pwm=%s cmd=%u target=%u %s limits=%u/%u/%u us\r\n",
+                 b ? "L" : "R", SERVO_ChannelName(c), SERVO_HeaderName(b,c),
+                 (unsigned)((c==0)?4:((c==1)?5:0)),
+                 (s.installed_mask[b] & (1U<<c)) ? "enabled" : "absent",
+                 s.enabled[b][c] ? "on" : "off", s.saved_us[b][c], s.target_us[b][c],
+                 motion[s.motion[b][c]], low,center,high);
+        }
+    }
+    LOGF("cmd is software pulse, not position feedback; only routed bank receives PWM\r\n");
+    LOGF("TIM3 PSC=%u ARR=%u CCR=%u/%u/%u CTLR1=%04x\r\n",
+         s.prescaler,s.period,s.compare[0],s.compare[1],s.compare[2],s.timer_control);
 }
 
 static void Console_HandleServo(void)
 {
-    char   *token = Console_NextToken();
-    int32_t value;
-
-    if(token == NULL)
-    {
-        Console_PrintServo();
-        return;
+    char *args[7], *token;
+    uint8_t n=0, mask;
+    uint32_t v[4]={0};
+    uint16_t us[3];
+    servo_result_t result;
+    while((token=Console_NextToken()) != NULL) {
+        if(n == 7) goto syntax;
+        args[n++]=token;
     }
-
-    if(strcmp(token, "SWEEP") == 0)
-    {
-        int32_t period_ms;
-
-        if((Console_NextInt(&period_ms) == 0U) || (period_ms <= 0))
-        {
-            period_ms = (int32_t)SERVO_SWEEP_PERIOD_MS;
+    if(!n || (n==1 && strcmp(args[0],"MAP")==0)) { Console_PrintServo(); return; }
+    if(n==1 && strcmp(args[0],"HELP")==0) { Console_PrintServoHelp(); return; }
+    if(strcmp(args[0],"SIDE")==0) {
+        if(n==1) { Console_PrintServo(); return; }
+        if(n!=2) goto syntax;
+        if(strcmp(args[1],"R")==0 || strcmp(args[1],"RIGHT")==0) result=SERVO_SetSideRight(1);
+        else if(strcmp(args[1],"L")==0 || strcmp(args[1],"LEFT")==0) result=SERVO_SetSideRight(0);
+        else goto syntax;
+    } else if(strcmp(args[0],"CENTER")==0 || strcmp(args[0],"HOLD")==0 || strcmp(args[0],"OFF")==0) {
+        if(n>2 || !(mask=Console_ServoMask(n==2 ? args[1] : NULL))) goto syntax;
+        if(strcmp(args[0],"CENTER")==0) result=SERVO_Center(mask);
+        else if(strcmp(args[0],"OFF")==0) result=SERVO_Off(mask);
+        else result=SERVO_Hold(mask);
+    } else if(strcmp(args[0],"ANGLE")==0) {
+        const char *angle;
+        int16_t sign = 1;
+        if(n!=4 || !(mask=Console_ServoMask(args[1]))) goto syntax;
+        angle = args[2];
+        if(*angle=='-') { sign=-1; angle++; }
+        else if(*angle=='+') angle++;
+        if(!Console_ServoNumber(angle,135,&v[0]) ||
+           !Console_ServoNumber(args[3],ROBOT_SERVO_MAX_MOTION_MS,&v[1])) goto syntax;
+        result=SERVO_MoveAngle(mask,(int16_t)(sign*(int16_t)v[0]),v[1]);
+    } else if(strcmp(args[0],"MOVE")==0) {
+        if(n!=4 || !(mask=Console_ServoMask(args[1])) ||
+           !Console_ServoNumber(args[2],2500,&v[0]) || v[0]<500 ||
+           !Console_ServoNumber(args[3],ROBOT_SERVO_MAX_MOTION_MS,&v[1])) goto syntax;
+        us[0]=us[1]=us[2]=(uint16_t)v[0];
+        result=SERVO_Move(mask,us,v[1]);
+    } else if(strcmp(args[0],"POSE")==0) {
+        uint8_t c;
+        if(n!=5) goto syntax;
+        for(c=0;c<3;c++) {
+            if(!Console_ServoNumber(args[c+1],2500,&v[c]) || v[c]<500) goto syntax;
+            us[c]=(uint16_t)v[c];
         }
-
-        SERVO_StartSweep(SERVO_SWEEP_MIN_US, SERVO_SWEEP_MAX_US,
-                         (uint32_t)period_ms);
-        LOGF("ok servo sweep %u-%u us, %d ms\r\n",
-             (unsigned int)SERVO_SWEEP_MIN_US,
-             (unsigned int)SERVO_SWEEP_MAX_US,
-             (int)period_ms);
-    }
-    else if(strcmp(token, "HOLD") == 0)
-    {
-        SERVO_StopSweep();
-        LOGF("ok servo hold %u us\r\n",
-             (unsigned int)SERVO_GetPulseUs());
-    }
-    else if((Console_ParseInt(token, &value) != 0U) &&
-            (value >= 500) && (value <= 2500))
-    {
-        SERVO_SetPulseUs((uint16_t)value);
-        LOGF("ok servo pulse %d us\r\n", (int)value);
-    }
-    else
-    {
-        LOGF("err: SERVO [500..2500 us|SWEEP [ms]|HOLD]\r\n");
-    }
+        if(!Console_ServoNumber(args[4],ROBOT_SERVO_MAX_MOTION_MS,&v[3])) goto syntax;
+        result=SERVO_Move(SERVO_MASK_ALL,us,v[3]);
+    } else if(strcmp(args[0],"SWEEP")==0) {
+        if(n<=2) {
+            v[0]=SERVO_SWEEP_PERIOD_MS;
+            if(n==2 && !Console_ServoNumber(args[1],ROBOT_SERVO_MAX_MOTION_MS,&v[0])) goto syntax;
+            result=SERVO_StartSweep(SERVO_SWEEP_MIN_US,SERVO_SWEEP_MAX_US,v[0]);
+        } else {
+            if(n!=5 || !(mask=Console_ServoMask(args[1])) ||
+               !Console_ServoNumber(args[2],2500,&v[0]) ||
+               !Console_ServoNumber(args[3],2500,&v[1]) ||
+               !Console_ServoNumber(args[4],ROBOT_SERVO_MAX_MOTION_MS,&v[2])) goto syntax;
+            result=SERVO_Sweep(mask,(uint16_t)v[0],(uint16_t)v[1],v[2]);
+        }
+    } else if(n==2 && (mask=Console_ServoMask(args[0])) != 0) {
+        if(!Console_ServoNumber(args[1],2500,&v[0]) || v[0]<500) goto syntax;
+        us[0]=us[1]=us[2]=(uint16_t)v[0]; result=SERVO_Move(mask,us,0);
+    } else if(n==1 && Console_ServoNumber(args[0],2500,&v[0]) && v[0]>=500) {
+        result=SERVO_SetPulseUs((uint16_t)v[0]);
+    } else goto syntax;
+    LOGF("%s servo %s\r\n", result==SERVO_OK ? "ok" : "err:", SERVO_ResultName(result));
+    return;
+syntax:
+    LOGF("err: invalid SERVO arguments\r\n");
+    Console_PrintServoHelp();
 }
 
 static void Console_PrintTurntable(void)
@@ -600,6 +748,142 @@ static void Console_HandleTurn(void)
     }
 
     LOGF("err: TURN [<deg> [rpm]|RUN|STOP|ZERO|PPR|PULSES]\r\n");
+}
+
+/*
+ * Bench test for one bridge: drive the requested duty forward, then the same
+ * duty in reverse, and report what the encoder saw in each phase. A wheel
+ * whose bridge input is not really connected moves one way only, or not at
+ * all, and the counts expose it immediately.
+ */
+static void Console_HandleWheelTest(void)
+{
+    int32_t index;
+    int32_t duty;
+    int32_t hold_ms;
+    int32_t start;
+    uint8_t wheel;
+
+    if((Console_NextInt(&index) == 0U) || (index < 1) ||
+       (index > (int32_t)WHEEL_COUNT))
+    {
+        LOGF("err: WTEST <n> [duty] [ms], n = 1..4\r\n");
+        return;
+    }
+
+    wheel = (uint8_t)(index - 1U);
+
+    if((Console_NextInt(&duty) == 0U) || (duty < 50) ||
+       (duty > (int32_t)MOTOR_DUTY_MAX))
+    {
+        duty = (int32_t)(MOTOR_DUTY_MAX / 3);
+    }
+
+    if((Console_NextInt(&hold_ms) == 0U) || (hold_ms < 50) ||
+       (hold_ms > 10000))
+    {
+        hold_ms = 800;
+    }
+
+    LOGF("WTEST %s duty=%d hold=%d ms per direction\r\n",
+         s_wheel_name[wheel], (int)duty, (int)hold_ms);
+
+    start = ENCODER_GetCount(wheel);
+
+    CHASSIS_CommandOpenLoop(wheel, (int16_t)duty);
+    vTaskDelay(pdMS_TO_TICKS((uint32_t)hold_ms));
+    LOGF("  duty=%+d moved=%ld counts rpm=%d\r\n",
+         (int)duty,
+         (long)(ENCODER_GetCount(wheel) - start),
+         (int)ENCODER_GetRpm(wheel));
+
+    CHASSIS_CommandOpenLoop(wheel, (int16_t)(-duty));
+    vTaskDelay(pdMS_TO_TICKS((uint32_t)hold_ms));
+    LOGF("  duty=%+d moved=%ld counts rpm=%d (net from start)\r\n",
+         (int)(-duty),
+         (long)(ENCODER_GetCount(wheel) - start),
+         (int)ENCODER_GetRpm(wheel));
+
+    CHASSIS_CommandStop();
+    LOGF("  WTEST done, motors coasting\r\n");
+}
+
+static void Console_WaitStepperIdle(void)
+{
+    stepper_status_t status;
+    uint32_t         waited_ms = 0U;
+
+    do
+    {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        STEPPER_GetStatus(&status);
+        waited_ms += 20U;
+    } while((status.state != STEPPER_STATE_IDLE) && (waited_ms < 20000U));
+}
+
+/*
+ * Bench test for the stepper wiring: N pulses one way, then N back, printing
+ * the pulse counter and the DIR pin so a swapped or missing direction line is
+ * obvious.
+ */
+static void Console_HandleStepperTest(void)
+{
+    stepper_wiring_t wiring;
+    stepper_status_t status;
+    int32_t          value;
+    int32_t          pulses = 200;
+    int32_t          rate_hz = 400;
+    int32_t          start_pos;
+
+    if((Console_NextInt(&value) != 0U) && (value > 0) && (value <= 100000))
+    {
+        pulses = value;
+    }
+
+    if((Console_NextInt(&value) != 0U) && (value >= 50) &&
+       (value <= (int32_t)ROBOT_STEPPER_MAX_RATE_HZ))
+    {
+        rate_hz = value;
+    }
+
+    STEPPER_GetWiring(&wiring);
+    STEPPER_GetStatus(&status);
+    start_pos = status.position_steps;
+
+    LOGF("STEST pulses=%d rate=%d Hz STEP=%s%u DIR=%s%u level=%u pos=%ld\r\n",
+         (int)pulses, (int)rate_hz,
+         wiring.step_port, (unsigned int)wiring.step_pin,
+         wiring.dir_port, (unsigned int)wiring.dir_pin,
+         (unsigned int)STEPPER_GetDirLevel(),
+         (long)status.position_steps);
+
+    if(STEPPER_MovePulses(pulses, (uint32_t)rate_hz) == 0U)
+    {
+        LOGF("err: STEST forward move rejected\r\n");
+        return;
+    }
+
+    Console_WaitStepperIdle();
+    STEPPER_GetStatus(&status);
+    LOGF("  +%d pulses -> pos=%ld moved=%ld DIR level=%u\r\n",
+         (int)pulses, (long)status.position_steps,
+         (long)(status.position_steps - start_pos),
+         (unsigned int)STEPPER_GetDirLevel());
+
+    if(STEPPER_MovePulses(-pulses, (uint32_t)rate_hz) == 0U)
+    {
+        LOGF("err: STEST reverse move rejected\r\n");
+        return;
+    }
+
+    Console_WaitStepperIdle();
+    STEPPER_GetStatus(&status);
+    LOGF("  -%d pulses -> pos=%ld moved=%ld DIR level=%u\r\n",
+         (int)pulses, (long)status.position_steps,
+         (long)(status.position_steps - start_pos),
+         (unsigned int)STEPPER_GetDirLevel());
+    LOGF("  STEST done; the pulse counter is generated, so watch the turntable:\r\n");
+    LOGF("  it must turn both ways, otherwise DIR never reaches the driver\r\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -895,6 +1179,45 @@ static void Console_HandleLine(char *line)
     {
         Console_HandleSpeed();
     }
+    else if(strcmp(command, "WTEST") == 0)
+    {
+        Console_HandleWheelTest();
+    }
+    else if(strcmp(command, "STEST") == 0)
+    {
+        Console_HandleStepperTest();
+    }
+    else if(strcmp(command, "DIR") == 0)
+    {
+        if((Console_NextInt(&a) != 0U) && ((a == 0) || (a == 1)))
+        {
+            if(STEPPER_SetDirLevel((uint8_t)a) == 0U)
+            {
+                LOGF("err: DIR is latched while moving, send TURN STOP first\r\n");
+            }
+            else
+            {
+                LOGF("ok stepper DIR=%d (%s) readback=%u\r\n",
+                     (int)a,
+                     (a != 0) ? "high" : "low",
+                     (unsigned int)STEPPER_GetDirLevel());
+            }
+        }
+        else
+        {
+            stepper_wiring_t wiring;
+
+            STEPPER_GetWiring(&wiring);
+            LOGF("stepper DIR=%s%u level=%u\r\n",
+                 wiring.dir_port, (unsigned int)wiring.dir_pin,
+                 (unsigned int)STEPPER_GetDirLevel());
+            LOGF("usage: DIR <0|1>, 1 = positive step direction\r\n");
+        }
+    }
+    else if(strcmp(command, "PINS") == 0)
+    {
+        Console_PrintPins();
+    }
     else if(strcmp(command, "M") == 0)
     {
         int32_t duty[WHEEL_COUNT];
@@ -1078,6 +1401,62 @@ static void Console_HandleLine(char *line)
     {
         Console_HandleTurn();
     }
+    else if(strcmp(command, "PPRCAL") == 0)
+    {
+        int32_t pulses;
+        float   degrees;
+        char    buffer[16];
+
+        if((Console_NextInt(&pulses) != 0U) && (pulses > 0) &&
+           (Console_NextFloat(&degrees) != 0U) && (degrees > 0.0f))
+        {
+            float ppr_f = ((float)pulses * 360.0f) / degrees;
+
+            if((ppr_f >= 100.0f) && (ppr_f <= 200000.0f))
+            {
+                uint32_t ppr = (uint32_t)(ppr_f + 0.5f);
+
+                STEPPER_SetStepsPerRev(ppr);
+                LOGF("ok turntable ppr=%lu (%ld pulses moved %s deg)\r\n",
+                     (unsigned long)ppr, (long)pulses,
+                     Console_Fixed3(degrees, buffer, sizeof(buffer)));
+            }
+            else
+            {
+                LOGF("err: computed ppr out of range, check the angle\r\n");
+            }
+        }
+        else
+        {
+            LOGF("usage: PPRCAL <pulses> <measured_degrees>\r\n");
+            LOGF("       run TURN PULSES <pulses> <hz> first, then measure\r\n");
+        }
+    }
+    else if(strcmp(command, "STEP") == 0)
+    {
+        if((Console_NextInt(&a) != 0U) && ((a == 0) || (a == 1)))
+        {
+            if(STEPPER_SetStepLevel((uint8_t)a) == 0U)
+            {
+                LOGF("err: STEP is busy while moving, send TURN STOP first\r\n");
+            }
+            else
+            {
+                LOGF("ok stepper STEP=%d readback=%u\r\n",
+                     (int)a, (unsigned int)STEPPER_GetStepLevel());
+            }
+        }
+        else
+        {
+            stepper_wiring_t wiring;
+
+            STEPPER_GetWiring(&wiring);
+            LOGF("stepper STEP=%s%u level=%u\r\n",
+                 wiring.step_port, (unsigned int)wiring.step_pin,
+                 (unsigned int)STEPPER_GetStepLevel());
+            LOGF("usage: STEP <0|1>, 1 = +3.3 V on the module STEP pin\r\n");
+        }
+    }
     else
     {
         LOGF("err: unknown '%s', send H for help\r\n", command);
@@ -1089,6 +1468,39 @@ void CONSOLE_Init(void)
     COMM_Init(ROBOT_CONSOLE_BAUDRATE);
 }
 
+/* Report boot-test milestones in task context, never from the PWM ISR. */
+static void Console_ReportServoTest(void)
+{
+    static uint8_t previous[3] = {0,0,0};
+    servo_status_t s;
+    uint8_t c;
+    if(!ROBOT_SERVO_BOOT_TEST) return;
+    SERVO_GetStatus(&s);
+    for(c=0;c<3;c++) {
+        uint8_t phase = s.boot_test_phase[0][c];
+        uint16_t low, center, high;
+        if(phase == previous[c]) continue;
+        SERVO_GetLimits(0,c,&low,&center,&high);
+        if(phase == 1) {
+            LOGF("servo test R/%s: start, %u -> %u us (1500 ms)\r\n",
+                 SERVO_ChannelName(c), s.saved_us[0][c], low);
+        } else if(phase == 2) {
+            LOGF("servo test R/%s: min %u us reached; -> %u us (3000 ms)\r\n",
+                 SERVO_ChannelName(c), low, high);
+        } else if(phase == 3) {
+            LOGF("servo test R/%s: max %u us reached; -> %u us (1500 ms)\r\n",
+                 SERVO_ChannelName(c), high, center);
+        } else if(previous[c] == 3 && s.enabled[0][c] &&
+                  s.motion[0][c] == SERVO_HOLD && s.saved_us[0][c] == center) {
+            LOGF("servo test R/%s: complete, hold %u us\r\n", SERVO_ChannelName(c), center);
+        } else {
+            LOGF("servo test R/%s: interrupted, command=%u us PWM=%s\r\n",
+                 SERVO_ChannelName(c), s.saved_us[0][c], s.enabled[0][c] ? "on" : "off");
+        }
+        previous[c] = phase;
+    }
+}
+
 void CONSOLE_Task(void *argument)
 {
     char line[COMM_LINE_MAX];
@@ -1097,6 +1509,7 @@ void CONSOLE_Task(void *argument)
 
     for(;;)
     {
+        Console_ReportServoTest();
         while(COMM_PollLine(line, sizeof(line)) != 0U)
         {
             Console_HandleLine(line);
