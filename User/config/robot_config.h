@@ -116,7 +116,7 @@
  *
  * TBS-K20 (Hangzhou Zhongling) is a PWM position servo:
  *   5-8.4 V, 50-330 Hz, 500-2500 us pulse, 1500 us center, 270 degrees.
- * The manual sweep stays inside a conservative 1000-2000 us range.
+ * Logical A=base PB4, B=middle PB5, C=claw PB0. Sweep commands disabled.
  */
 #define ROBOT_SERVO_PWM_FREQUENCY_HZ        300U
 #define ROBOT_SERVO_SWEEP_MIN_US             1000U
@@ -134,13 +134,22 @@
 #define ROBOT_SERVO_LEFT_INSTALLED_MASK      0x07U
 #define ROBOT_SERVO_MAP_VERIFIED             0U
 #define ROBOT_SERVO_DEFAULT_SIDE_RIGHT       1U
-/* Bench firmware: one full-range cycle on the default arm after every reset. */
-#define ROBOT_SERVO_BOOT_TEST                1U
-#define ROBOT_SERVO_MIN_US_TABLE             {{500U,500U,500U},{500U,500U,500U}}
+/* Manual debugging: boot at center; no automatic full-range cycle. */
+#define ROBOT_SERVO_BOOT_TEST                0U
+#define ROBOT_SERVO_MIN_US_TABLE             {{750U,850U,850U},{500U,500U,500U}}
 #define ROBOT_SERVO_CENTER_US_TABLE          {{1500U,1500U,1500U},{1500U,1500U,1500U}}
-#define ROBOT_SERVO_MAX_US_TABLE             {{2500U,2500U,2500U},{2500U,2500U,2500U}}
+#define ROBOT_SERVO_MAX_US_TABLE             {{1500U,1500U,1500U},{2500U,2500U,2500U}}
 /* Table row 0 = right, row 1 = left. Times are bounded to avoid wraparound. */
 #define ROBOT_SERVO_MAX_MOTION_MS            600000U
+
+/* Real R = board L (PD2 high). Logical A/B/C = PB4/PB5/PB0.
+ * Left-arm presets are intentionally unavailable until calibrated. */
+#define ROBOT_SERVO_ACTION_MS                1000U
+#define ROBOT_SERVO_EXTEND_A_US              875U
+#define ROBOT_SERVO_EXTEND_B_US              1500U
+#define ROBOT_SERVO_GRIP_US                  850U
+#define ROBOT_SERVO_CLAMP_US                 1000U
+#define ROBOT_SERVO_OPEN_US                  1500U
 
 /* ---------------- stepper turntable ---------------- */
 

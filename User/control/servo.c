@@ -1,4 +1,4 @@
-/* TIM3 hardware PWM, with complete frame commits in the low interval. */
+/* Direct TIM3 hardware PWM, derived from the actual APB1 timer clock. */
 #include "servo.h"
 #include "ch32v30x.h"
 #include "FreeRTOS.h"
@@ -6,15 +6,13 @@
 #include <string.h>
 #define QUEUE_SIZE 16U
 #define FRAME_US (1000000U / SERVO_PWM_FREQUENCY_HZ)
-#define COMMIT_US 3000U
-/* Leave a wrap guard even with code_2's 3333 us frame. */
-#define WRAP_GUARD_US ((FRAME_US > COMMIT_US + 2000U) ? 1000U : 100U)
+
 typedef struct {
     uint16_t pulse, target, start, low, high;
     uint32_t elapsed, duration;
     uint8_t motion, enabled, test_phase;
 } channel_t;
-enum { CMD_MOVE, CMD_CENTER, CMD_HOLD, CMD_OFF, CMD_SWEEP, CMD_SIDE };
+enum { CMD_MOVE, CMD_CENTER, CMD_HOLD, CMD_OFF, CMD_SWEEP, CMD_SIDE, CMD_ACTION };
 typedef struct {
     uint8_t type, mask, side;
     uint16_t us[3], low, high;
@@ -26,13 +24,15 @@ static const uint16_t s_max[2][3] = ROBOT_SERVO_MAX_US_TABLE;
 static const uint8_t s_installed[2] = {
     ROBOT_SERVO_RIGHT_INSTALLED_MASK, ROBOT_SERVO_LEFT_INSTALLED_MASK
 };
-static const char *const s_headers[2][3] = {{"H21","H3","H4"},{"H5","H6","H7"}};
+static const char *const s_headers[2][3] = {{"H5","H6","H7"},{"H21","H3","H4"}};
 static channel_t s_bank[2][3];
 static command_t s_queue[QUEUE_SIZE];
 static uint8_t s_head, s_count, s_side, s_requested_side, s_valid;
 static uint32_t s_timer_hz;
-static TickType_t s_last_tick;
-/* ISR mailbox, protected by task critical sections. */
+static TickType_t s_last_tick, s_blank_tick;
+static uint8_t s_blanking, s_action, s_pick_step;
+static uint32_t s_action_ms, s_pick_wait;
+/* Task-owned output snapshot, with status protected by critical sections. */
 static volatile uint16_t s_frame[3];
 static volatile uint8_t s_frame_side, s_hardware_side;
 static servo_status_t s_status;
@@ -48,6 +48,8 @@ static void Servo_Publish(void)
     uint8_t b, c;
     taskENTER_CRITICAL();
     s_frame_side = s_side;
+    s_status.action = s_action;
+    s_status.pick_step = s_pick_step;
     s_status.sweeping = 0;
     for(b = 0; b < 2; b++) {
         s_status.installed_mask[b] = s_installed[b];
@@ -78,16 +80,21 @@ static servo_result_t Servo_Queue(command_t *cmd)
     mask = cmd->mask;
     if(!s_valid) result = SERVO_ERR_CONFIG;
     else if(s_count == QUEUE_SIZE) result = SERVO_ERR_QUEUE_FULL;
+    else if(cmd->type == CMD_ACTION && side != 0) result = SERVO_ERR_UNAVAILABLE;
+    else if(cmd->type == CMD_SWEEP) result = SERVO_ERR_UNAVAILABLE;
     else if(cmd->type != CMD_SIDE) {
         if(!mask || (mask & ~SERVO_MASK_ALL)) result = SERVO_ERR_RANGE;
         else if(mask != SERVO_MASK_ALL && (mask & ~s_installed[side])) result = SERVO_ERR_UNAVAILABLE;
+        if(cmd->type==CMD_ACTION && (mask & ~s_installed[side])) result=SERVO_ERR_UNAVAILABLE;
         mask &= s_installed[side];
         if(!mask && result == SERVO_OK) result = SERVO_ERR_UNAVAILABLE;
         if(cmd->ms > ROBOT_SERVO_MAX_MOTION_MS) result = SERVO_ERR_RANGE;
         if(cmd->type == CMD_SWEEP && (cmd->ms < 20 || cmd->low >= cmd->high)) result = SERVO_ERR_RANGE;
         for(c = 0; c < 3 && result == SERVO_OK; c++) {
             if(!(mask & (1U << c))) continue;
-            if(cmd->type == CMD_MOVE && (cmd->us[c] < s_min[side][c] || cmd->us[c] > s_max[side][c])) result = SERVO_ERR_RANGE;
+            if(cmd->type==CMD_ACTION && cmd->low==SERVO_ACTION_PICK &&
+               (1500<s_min[side][c] || 1500>s_max[side][c])) result=SERVO_ERR_RANGE;
+            if((cmd->type == CMD_MOVE || cmd->type == CMD_ACTION) && (cmd->us[c] < s_min[side][c] || cmd->us[c] > s_max[side][c])) result = SERVO_ERR_RANGE;
             if(cmd->type == CMD_SWEEP && (cmd->low < s_min[side][c] || cmd->high > s_max[side][c])) result = SERVO_ERR_RANGE;
         }
     }
@@ -106,13 +113,14 @@ void SERVO_Init(void)
     TIM_TimeBaseInitTypeDef tb = {0};
     TIM_OCInitTypeDef oc = {0};
     RCC_ClocksTypeDef clocks = {0};
-    NVIC_InitTypeDef nvic = {0};
     uint8_t b, c;
     uint32_t divider;
     s_head = s_count = 0;
     s_side = s_requested_side = ROBOT_SERVO_DEFAULT_SIDE_RIGHT ? 0 : 1;
     s_frame_side = s_hardware_side = s_side;
-    s_valid = (FRAME_US > COMMIT_US + WRAP_GUARD_US && FRAME_US <= 65536U);
+    s_valid = (FRAME_US > 2500U && FRAME_US <= 65536U);
+    s_blanking = 0;
+    s_action = s_pick_step = 0;
     memset(s_bank, 0, sizeof(s_bank));
     memset(&s_status, 0, sizeof(s_status));
     for(b = 0; b < 2; b++) {
@@ -147,31 +155,21 @@ void SERVO_Init(void)
     tb.TIM_CounterMode = TIM_CounterMode_Up;
     tb.TIM_ClockDivision = TIM_CKD_DIV1;
     TIM_TimeBaseInit(TIM3, &tb);
-    oc.TIM_OCMode = TIM_OCMode_PWM1;
+    oc.TIM_OCMode = TIM_OCMode_PWM2;
     oc.TIM_OutputState = TIM_OutputState_Enable;
-    oc.TIM_OCPolarity = TIM_OCPolarity_High;
+    oc.TIM_OCPolarity = TIM_OCPolarity_Low;
     TIM_OC1Init(TIM3, &oc); TIM_OC2Init(TIM3, &oc); TIM_OC3Init(TIM3, &oc);
     TIM_OC1PreloadConfig(TIM3, TIM_OCPreload_Enable);
     TIM_OC2PreloadConfig(TIM3, TIM_OCPreload_Enable);
     TIM_OC3PreloadConfig(TIM3, TIM_OCPreload_Enable);
-    /* Internal CH4 deadline; PB1 is not driven. */
-    oc.TIM_OCMode = TIM_OCMode_Timing;
-    oc.TIM_OutputState = TIM_OutputState_Disable;
-    oc.TIM_Pulse = COMMIT_US;
-    TIM_OC4Init(TIM3, &oc);
     TIM_ARRPreloadConfig(TIM3, ENABLE);
     Servo_Publish();
-    /* Start with an empty frame so enabling the timer cannot stretch the first
-     * high pulse. The first CC4 commit arms center for the next full frame. */
-    TIM_SetCompare1(TIM3, 0); TIM_SetCompare2(TIM3, 0); TIM_SetCompare3(TIM3, 0);
+    TIM_SetCompare1(TIM3, s_frame[0]);
+    TIM_SetCompare2(TIM3, s_frame[1]);
+    TIM_SetCompare3(TIM3, s_frame[2]);
+    TIM_CtrlPWMOutputs(TIM3, ENABLE);
     TIM_GenerateEvent(TIM3, TIM_EventSource_Update);
     TIM_ClearITPendingBit(TIM3, TIM_IT_CC4);
-    nvic.NVIC_IRQChannel = TIM3_IRQn;
-    nvic.NVIC_IRQChannelPreemptionPriority = 2;
-    nvic.NVIC_IRQChannelSubPriority = 1;
-    nvic.NVIC_IRQChannelCmd = ENABLE;
-    NVIC_Init(&nvic);
-    TIM_ITConfig(TIM3, TIM_IT_CC4, ENABLE);
     s_last_tick = xTaskGetTickCount();
     TIM_Cmd(TIM3, ENABLE);
     if(ROBOT_SERVO_BOOT_TEST && s_valid) {
@@ -187,9 +185,51 @@ void SERVO_Init(void)
         Servo_Publish();
     }
 }
+/* Only the control task starts or advances poses. */
+static void Servo_StartPose(uint8_t mask, const uint16_t us[3], uint32_t ms)
+{
+    uint8_t c;
+    for(c=0;c<3;c++) {
+        channel_t *ch=&s_bank[s_side][c];
+        if(!(mask & (1U<<c))) continue;
+        ch->enabled=1; ch->test_phase=0; ch->elapsed=0;
+        ch->start=ch->pulse; ch->target=us[c]; ch->duration=ms;
+        ch->motion=(ms && ch->start!=ch->target) ? SERVO_MOVING : SERVO_HOLD;
+        if(ch->motion==SERVO_HOLD) ch->pulse=ch->target;
+    }
+}
+static uint8_t Servo_IsMoving(void)
+{
+    uint8_t c;
+    for(c=0;c<3;c++) if(s_bank[s_side][c].motion!=SERVO_HOLD) return 1;
+    return 0;
+}
+static void Servo_PickPose(uint8_t step)
+{
+    uint16_t us[3]={1500,1500,ROBOT_SERVO_OPEN_US};
+    uint8_t mask=4;
+    if(step==2) { us[0]=ROBOT_SERVO_EXTEND_A_US; us[1]=ROBOT_SERVO_EXTEND_B_US; mask=3; }
+    else if(step==3) us[2]=ROBOT_SERVO_GRIP_US;
+    else if(step==4) mask=3;
+    Servo_StartPose(mask,us,s_action_ms);
+}
 static void Servo_Apply(const command_t *cmd)
 {
     uint8_t c;
+    /* New explicit commands cancel the remaining automatic sequence. */
+    s_action=s_pick_step=0; s_pick_wait=0;
+    if(cmd->type == CMD_ACTION) {
+        /* Freeze preceding motion so a preset starts from a coherent pose. */
+        for(c=0;c<3;c++) {
+            s_bank[s_side][c].motion=SERVO_HOLD;
+            s_bank[s_side][c].target=s_bank[s_side][c].pulse;
+            s_bank[s_side][c].test_phase=0;
+        }
+        s_action=(uint8_t)cmd->low; s_action_ms=cmd->ms;
+        if(s_action==SERVO_ACTION_PICK) { s_pick_step=1; Servo_PickPose(1); }
+        else Servo_StartPose(cmd->mask,cmd->us,cmd->ms);
+        return;
+    }
     if(cmd->type == CMD_SIDE) {
         if(s_side != cmd->side) {
             for(c = 0; c < 3; c++) {
@@ -220,6 +260,25 @@ static void Servo_Apply(const command_t *cmd)
         }
     }
 }
+static void Servo_Commit(void)
+{
+    if(s_hardware_side != s_side) {
+        if(!s_blanking) {
+            TIM_SetCompare1(TIM3, 0); TIM_SetCompare2(TIM3, 0); TIM_SetCompare3(TIM3, 0);
+            /* Preloads become low at the next rollover. Wait >=20 ms before routing. */
+            s_blank_tick = xTaskGetTickCount();
+            s_blanking = 1;
+            return;
+        }
+        if((TickType_t)(xTaskGetTickCount()-s_blank_tick) < pdMS_TO_TICKS(20)) return;
+        Servo_WriteSide(s_side);
+        s_hardware_side = s_side;
+        s_blanking = 0;
+    }
+    TIM_SetCompare1(TIM3, s_frame[0]);
+    TIM_SetCompare2(TIM3, s_frame[1]);
+    TIM_SetCompare3(TIM3, s_frame[2]);
+}
 void SERVO_Update(void)
 {
     TickType_t now = xTaskGetTickCount();
@@ -228,15 +287,19 @@ void SERVO_Update(void)
     command_t cmd;
     if(!dt) return;
     s_last_tick = now;
-    /* Preserve FIFO ordering across the ISR bank switch. */
+    /* Preserve FIFO ordering across the nonblocking bank switch. */
     if(s_hardware_side == s_side) {
         for(c = 0; c < 3; c++) {
             channel_t *ch = &s_bank[s_side][c];
             if(ch->motion == SERVO_MOVING) {
                 uint32_t remaining = ch->duration - ch->elapsed;
                 ch->elapsed += (dt < remaining) ? dt : remaining;
-                ch->pulse = (uint16_t)((int32_t)ch->start +
-                    ((int64_t)((int32_t)ch->target - ch->start) * ch->elapsed) / ch->duration);
+                /* Smoothstep: zero velocity at each end, synchronized by duration. */
+                uint32_t t=(uint32_t)(((uint64_t)ch->elapsed*10000U)/ch->duration);
+                uint32_t blend=(uint32_t)(((uint64_t)t*t*(30000U-2U*t))/100000000U);
+                ch->pulse=(uint16_t)((int32_t)ch->start+
+                    ((int64_t)((int32_t)ch->target-ch->start)*blend)/10000);
+                if(ch->elapsed==ch->duration) ch->pulse=ch->target;
                 if(ch->elapsed == ch->duration) {
                     if(ch->test_phase == 1U || ch->test_phase == 2U) {
                         ch->start = ch->pulse;
@@ -258,6 +321,15 @@ void SERVO_Update(void)
                 ch->target = ch->pulse;
             }
         }
+        if(s_action && !Servo_IsMoving()) {
+            if(s_action==SERVO_ACTION_PICK && s_pick_step<4) {
+                if(s_pick_step==3) {
+                    if(s_pick_wait<200U) s_pick_wait+=(dt<200U-s_pick_wait)?dt:200U-s_pick_wait;
+                    if(s_pick_wait>=200U) Servo_PickPose(++s_pick_step);
+                } else Servo_PickPose(++s_pick_step);
+            }
+            else s_action=s_pick_step=0;
+        }
         taskENTER_CRITICAL();
         if(s_count) {
             cmd = s_queue[s_head]; s_head = (s_head + 1U) % QUEUE_SIZE; s_count--; have_cmd = 1;
@@ -266,6 +338,46 @@ void SERVO_Update(void)
         if(have_cmd) Servo_Apply(&cmd);
     }
     Servo_Publish();
+    Servo_Commit();
+}
+servo_result_t SERVO_Action(servo_action_t action, uint32_t ms)
+{
+    command_t cmd={0};
+    if(action<=SERVO_ACTION_NONE || action>SERVO_ACTION_PICK || !ms) return SERVO_ERR_RANGE;
+    cmd.type=CMD_ACTION; cmd.low=(uint16_t)action; cmd.ms=ms;
+    cmd.us[0]=cmd.us[1]=cmd.us[2]=1500; cmd.mask=SERVO_MASK_ALL;
+    if(action==SERVO_ACTION_EXTEND || action==SERVO_ACTION_PICK) {
+        cmd.us[0]=ROBOT_SERVO_EXTEND_A_US; cmd.us[1]=ROBOT_SERVO_EXTEND_B_US;
+        cmd.mask=(action==SERVO_ACTION_PICK)?7:3;
+        if(action==SERVO_ACTION_PICK) cmd.us[2]=ROBOT_SERVO_GRIP_US;
+    } else if(action==SERVO_ACTION_RETRACT) cmd.mask=3;
+    else if(action==SERVO_ACTION_OPEN || action==SERVO_ACTION_GRIP || action==SERVO_ACTION_CLAMP) {
+        cmd.mask=4;
+        cmd.us[2]=(action==SERVO_ACTION_OPEN)?ROBOT_SERVO_OPEN_US:
+                  (action==SERVO_ACTION_GRIP)?ROBOT_SERVO_GRIP_US:ROBOT_SERVO_CLAMP_US;
+    }
+    return Servo_Queue(&cmd);
+}
+const char *SERVO_ActionName(servo_action_t action)
+{
+    static const char *const names[]={"idle","reset","extend","retract","open","grip","clamp","pick"};
+    return action<=SERVO_ACTION_PICK?names[action]:"unknown";
+}
+servo_result_t SERVO_Jog(uint8_t channel, int16_t delta_us, uint32_t ms)
+{
+    servo_result_t result;
+    uint16_t us[3]={1500,1500,1500};
+    int32_t target;
+    if(channel>=3) return SERVO_ERR_RANGE;
+    taskENTER_CRITICAL();
+    if(s_count || s_action || s_requested_side!=s_side) result=SERVO_ERR_UNAVAILABLE;
+    else {
+        target=(int32_t)s_status.target_us[s_side][channel]+delta_us;
+        if(target<s_min[s_side][channel] || target>s_max[s_side][channel]) result=SERVO_ERR_RANGE;
+        else { us[channel]=(uint16_t)target; result=SERVO_Move((uint8_t)(1U<<channel),us,ms); }
+    }
+    taskEXIT_CRITICAL();
+    return result;
 }
 servo_result_t SERVO_Move(uint8_t mask, const uint16_t us[3], uint32_t ms)
 {
@@ -297,7 +409,16 @@ servo_result_t SERVO_SetAllPulseUs(uint16_t us)
 }
 static servo_result_t Servo_Simple(uint8_t type, uint8_t mask)
 {
-    command_t cmd = {0}; cmd.type = type; cmd.mask = mask; return Servo_Queue(&cmd);
+    command_t cmd = {0}; servo_result_t result;
+    cmd.type=type; cmd.mask=mask;
+    taskENTER_CRITICAL();
+    if(type==CMD_HOLD || type==CMD_OFF) {
+        s_head=s_count=0; s_requested_side=s_side;
+        cmd.mask=SERVO_MASK_ALL; /* Cancel the whole pose/sequence. */
+    }
+    result=Servo_Queue(&cmd);
+    taskEXIT_CRITICAL();
+    return result;
 }
 servo_result_t SERVO_Center(uint8_t mask) { return Servo_Simple(CMD_CENTER, mask); }
 servo_result_t SERVO_Off(uint8_t mask) { return Servo_Simple(CMD_OFF, mask); }
@@ -348,19 +469,3 @@ uint8_t SERVO_GetSideRight(void) { return s_status.side_right; }
 uint16_t SERVO_GetChannelPulseUs(uint8_t c) { return c < 3 ? s_status.pulse_us[c] : 0; }
 uint16_t SERVO_GetPulseUs(void) { return SERVO_GetChannelPulseUs(1); }
 uint8_t SERVO_IsSweeping(void) { return s_status.sweeping; }
-#ifndef SERVO_HOST_TEST
-void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
-#endif
-void TIM3_IRQHandler(void)
-{
-    uint16_t count;
-    if(TIM_GetITStatus(TIM3, TIM_IT_CC4) == RESET) return;
-    TIM_ClearITPendingBit(TIM3, TIM_IT_CC4);
-    count = TIM3->CNT;
-    /* Late interrupts must not switch during pulses or close to counter wrap. */
-    if(count < COMMIT_US || count > FRAME_US - WRAP_GUARD_US) return;
-    TIM_SetCompare1(TIM3, s_frame[0]); TIM_SetCompare2(TIM3, s_frame[1]); TIM_SetCompare3(TIM3, s_frame[2]);
-    if(s_hardware_side != s_frame_side) {
-        Servo_WriteSide(s_frame_side); s_hardware_side = s_frame_side;
-    }
-}

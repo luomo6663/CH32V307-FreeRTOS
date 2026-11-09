@@ -29,6 +29,9 @@ extern AFIO_TypeDef test_afio;
 #define TIM_CounterMode_Up 1
 #define TIM_CKD_DIV1 1
 #define TIM_OCMode_PWM1 1
+#define TIM_OCMode_PWM2 2
+#define TIM_OCPolarity_Low 0
+#define TIM_CtrlPWMOutputs(...) ((void)0)
 #define TIM_OutputState_Enable 1
 #define TIM_OutputState_Disable 0
 #define TIM_OCPolarity_High 1

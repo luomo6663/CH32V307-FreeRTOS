@@ -8,6 +8,7 @@ try {
                 "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
                 "-Itests/servo_host", "-IUser")
     $cases = @(
+        @{ Name="actions"; Source="test_actions.c"; Define=@() },
         @{ Name="driver"; Source="test_servo.c"; Define=@() },
         @{ Name="boot"; Source="test_boot.c"; Define=@("-DTEST_SERVO_BOOT") },
         @{ Name="console"; Source="test_console.c"; Define=@() },

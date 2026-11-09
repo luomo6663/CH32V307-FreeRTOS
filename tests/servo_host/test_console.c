@@ -54,15 +54,24 @@ int main(void)
     assert(s_count==0);
     command("MAP","UNVERIFIED");command("HELP","bare us=channel B");
     command("SIDE R","ok servo queued");command("CENTER ALL","ok servo queued");
-    command("A 1600","ok servo queued");command("1500","ok servo queued");
-    command("MOVE B 1700 1000","ok servo queued");
+    command("A 1400","ok servo queued");command("1500","ok servo queued");
+    command("MOVE B 1400 1000","ok servo queued");
     command("ANGLE B -20 500","ok servo queued");
-    command("ANGLE B +20 500","ok servo queued");
-    command("POSE 1500 1600 1400 1000","ok servo queued");
-    command("SWEEP A 1400 1600 2000","ok servo queued");
-    command("SWEEP 2000","ok servo queued");command("SWEEP","ok servo queued");
+    command("ANGLE B +20 500","err:");
+    command("POSE 1400 1300 1200 1000","ok servo queued");
+    command("SWEEP A 1400 1600 2000","err:");
+    command("SWEEP 2000","err:");command("SWEEP","err:");
     command("SWEEP A 1600 1400 2000","err:");command("SWEEP 0","err:");
     command("HOLD","ok servo queued");command("OFF C","ok servo queued");
-    while(s_count) { ticks+=5;SERVO_Update();test_tim.CNT=3000;TIM3_IRQHandler(); }
+    while(s_count) { ticks+=5;SERVO_Update(); }
+    command("EXTEND 0","err:");command("OPEN extra","err:");
+    command("EXTEND 1000","ok servo queued");
+    ticks+=5;SERVO_Update();
+    assert(s_status.target_us[0][0]==875 && s_status.target_us[0][1]==1500);
+    command("HOLD","ok servo queued");ticks+=5;SERVO_Update();
+    command("JOG A -10 500","ok servo queued");ticks+=5;SERVO_Update();
+    command("LIMIT","limits=");command("SIDE L","ok servo queued");
+    command("GRIP","err:");
+    while(s_count) { ticks+=5;SERVO_Update(); }
     puts("servo console: all checks passed");return 0;
 }

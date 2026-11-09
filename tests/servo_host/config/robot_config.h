@@ -1,7 +1,9 @@
 /* Host-only overlays; production includes the real config directly. */
 #include "../../../User/config/robot_config.h"
-#ifndef TEST_SERVO_BOOT
 #undef ROBOT_SERVO_BOOT_TEST
+#ifdef TEST_SERVO_BOOT
+#define ROBOT_SERVO_BOOT_TEST 1U
+#else
 #define ROBOT_SERVO_BOOT_TEST 0U
 #endif
 #ifdef TEST_SERVO_MISSING

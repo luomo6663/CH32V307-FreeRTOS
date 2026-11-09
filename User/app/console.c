@@ -421,16 +421,16 @@ static void Console_PrintServoHelp(void)
     LOGF("SERVO <A|B|C|ALL> <us>  set channel pulse\r\n");
     LOGF("SERVO MOVE <A|B|C|ALL> <us> <ms>  smooth move\r\n");
     LOGF("SERVO CENTER [A|B|C|ALL]  return to configured center\r\n");
-    LOGF("SERVO SWEEP [ms]      scan current side ALL, 1000..2000 us; default %lu ms\r\n",
-         (unsigned long)SERVO_SWEEP_PERIOD_MS);
+    LOGF("SERVO RESET|EXTEND|RETRACT|OPEN|GRIP|CLAMP|PICK [ms]\r\n");
+    LOGF("SERVO JOG <A|B|C> <signed_us> [ms]  relative move\r\n");
+    LOGF("SERVO LIMIT           show current limits; SWEEP disabled\r\n");
     LOGF("SERVO HOLD            stop scanning/moving, hold current pulse\r\n");
     LOGF("SERVO OFF [A|B|C|ALL]  disable PWM output\r\n");
     LOGF("SERVO POSE <A_us> <B_us> <C_us> <ms>  move three channels\r\n");
-    LOGF("SERVO SWEEP <A|B|C|ALL> <min_us> <max_us> <ms>  custom scan\r\n");
-    LOGF("us=500..2500 within configured limits; ms=0..%lu (sweep >=20)\r\n",
+    LOGF("us must satisfy channel limits; ms=0..%lu (presets require >0)\r\n",
          (unsigned long)ROBOT_SERVO_MAX_MOTION_MS);
     LOGF("ALL=current bank installed channels; bare us=channel B; OK=queued\r\n");
-    LOGF("A=claw (PB4), B=middle (PB5), C=base (PB0); center=1500 us by default\r\n");
+    LOGF("A=base (PB4), B=middle (PB5), C=claw (PB0); center=1500 us by default\r\n");
 }
 
 static void Console_PrintServo(void)
@@ -446,6 +446,9 @@ static void Console_PrintServo(void)
          s.requested_side_right ? "R" : "L", s.side_right ? "R" : "L",
          s.hardware_side_right ? "R" : "L", (unsigned)((s.gpiod_odr >> 2)&1U),
          (unsigned)ROBOT_SERVO_SIDE_INVERT);
+    LOGF("real=%s hardware-label=%s (L/R reversed); action=%s pick-step=%u\r\n",
+         s.side_right?"R":"L",s.side_right?"L":"R",
+         SERVO_ActionName((servo_action_t)s.action),s.pick_step);
     for(b = 0; b < 2; b++) {
         for(c = 0; c < 3; c++) {
             uint16_t low=0, center=0, high=0;
@@ -461,6 +464,9 @@ static void Console_PrintServo(void)
     LOGF("cmd is software pulse, not position feedback; only routed bank receives PWM\r\n");
     LOGF("TIM3 PSC=%u ARR=%u CCR=%u/%u/%u CTLR1=%04x\r\n",
          s.prescaler,s.period,s.compare[0],s.compare[1],s.compare[2],s.timer_control);
+    LOGF("TIM3 clock=%lu Hz tick=%lu Hz; PB4/PB5/PB0 hardware PWM\r\n",
+         (unsigned long)s.timer_hz,
+         (unsigned long)(s.timer_hz / ((uint32_t)s.prescaler+1U)));
 }
 
 static void Console_HandleServo(void)
@@ -475,8 +481,33 @@ static void Console_HandleServo(void)
         args[n++]=token;
     }
     if(!n || (n==1 && strcmp(args[0],"MAP")==0)) { Console_PrintServo(); return; }
+    if(n==1 && strcmp(args[0],"LIMIT")==0) { Console_PrintServo(); return; }
     if(n==1 && strcmp(args[0],"HELP")==0) { Console_PrintServoHelp(); return; }
-    if(strcmp(args[0],"SIDE")==0) {
+    if(strcmp(args[0],"RESET")==0 || strcmp(args[0],"EXTEND")==0 ||
+       strcmp(args[0],"RETRACT")==0 || strcmp(args[0],"OPEN")==0 ||
+       strcmp(args[0],"GRIP")==0 || strcmp(args[0],"CLAMP")==0 || strcmp(args[0],"PICK")==0) {
+        servo_action_t action;
+        if(n>2) goto syntax;
+        v[0]=ROBOT_SERVO_ACTION_MS;
+        if(n==2 && (!Console_ServoNumber(args[1],ROBOT_SERVO_MAX_MOTION_MS,&v[0]) || !v[0])) goto syntax;
+        if(strcmp(args[0],"RESET")==0) action=SERVO_ACTION_RESET;
+        else if(strcmp(args[0],"EXTEND")==0) action=SERVO_ACTION_EXTEND;
+        else if(strcmp(args[0],"RETRACT")==0) action=SERVO_ACTION_RETRACT;
+        else if(strcmp(args[0],"OPEN")==0) action=SERVO_ACTION_OPEN;
+        else if(strcmp(args[0],"GRIP")==0) action=SERVO_ACTION_GRIP;
+        else if(strcmp(args[0],"CLAMP")==0) action=SERVO_ACTION_CLAMP;
+        else action=SERVO_ACTION_PICK;
+        result=SERVO_Action(action,v[0]);
+    } else if(strcmp(args[0],"JOG")==0) {
+        const char *delta; int16_t sign=1;
+        if((n!=3 && n!=4) || !(mask=Console_ServoMask(args[1])) || mask==7) goto syntax;
+        delta=args[2];
+        if(*delta=='-') { sign=-1; delta++; } else if(*delta=='+') delta++;
+        v[1]=ROBOT_SERVO_ACTION_MS;
+        if(!Console_ServoNumber(delta,2000,&v[0]) ||
+           (n==4 && !Console_ServoNumber(args[3],ROBOT_SERVO_MAX_MOTION_MS,&v[1]))) goto syntax;
+        result=SERVO_Jog(mask==1?0:mask==2?1:2,(int16_t)(sign*(int16_t)v[0]),v[1]);
+    } else if(strcmp(args[0],"SIDE")==0) {
         if(n==1) { Console_PrintServo(); return; }
         if(n!=2) goto syntax;
         if(strcmp(args[1],"R")==0 || strcmp(args[1],"RIGHT")==0) result=SERVO_SetSideRight(1);

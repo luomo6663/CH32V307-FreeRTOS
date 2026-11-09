@@ -61,11 +61,11 @@ static void Robot_PrintBanner(void)
 
     LOGF(" motors  W1 PA2/PA3  W2 PA15/PB3  W3 PD12/PD13  W4 PD14/PD15\r\n");
     LOGF(" encoder W1 PC6/PC7  W2 PD1/PD3  W3 PA8/PA9  W4 PD9/PD11\r\n");
-    LOGF(" servo   ARM_A/B/C=PB4/PB5/PB0 TIM3_CH1/2/3, %lu Hz, %u-%u us\r\n",
+    LOGF(" servo   A/B/C=PB4/PB5/PB0 TIM3_CH1/2/3, %lu Hz, %u-%u us\r\n",
          (unsigned long)SERVO_PWM_FREQUENCY_HZ,
          (unsigned int)SERVO_SWEEP_MIN_US,
          (unsigned int)SERVO_SWEEP_MAX_US);
-    LOGF("         ARM_SWITCH=PD2 (SERVO HELP; SERVO MAP for unverified headers)\r\n");
+    LOGF("         ARM_SWITCH=PD2: real R=board L (HIGH), real L=board R (LOW)\r\n");
     if(ROBOT_SERVO_BOOT_TEST) {
         LOGF(" servo BOOT TEST: right A/B/C full range once, then center (~6s)\r\n");
         LOGF("       SERVO HOLD cancels motion; SERVO OFF disables PWM\r\n");

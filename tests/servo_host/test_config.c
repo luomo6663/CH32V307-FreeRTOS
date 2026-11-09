@@ -24,8 +24,8 @@ int main(void)
     /* Validation follows the queued SIDE before hardware has switched. */
     assert(SERVO_SetChannelPulseUs(2,1500)==SERVO_ERR_UNAVAILABLE);
     assert(SERVO_SetAllPulseUs(1600)==SERVO_OK);
-    ticks+=5;SERVO_Update();test_tim.CNT=3000;TIM3_IRQHandler();
-    ticks+=5;SERVO_Update();TIM3_IRQHandler();SERVO_GetStatus(&s);
+    ticks+=5;SERVO_Update();ticks+=10;SERVO_Update();
+    ticks+=5;SERVO_Update();SERVO_GetStatus(&s);
     assert(s.saved_us[1][0]==1600 && s.saved_us[1][1]==1600 && !s.enabled[1][2]);
     assert(test_tim.CH3CVR==0);
 #endif
@@ -33,7 +33,7 @@ int main(void)
     assert(s.pulse_us[0]==1450 && s.pulse_us[1]==1550);
     assert(SERVO_SetChannelPulseUs(0,1100)==SERVO_ERR_RANGE);
     assert(SERVO_SetAllPulseUs(1850)==SERVO_ERR_RANGE);
-    assert(SERVO_Sweep(2,1200,1600,1000)==SERVO_ERR_RANGE);
+    assert(SERVO_Sweep(2,1200,1600,1000)==SERVO_ERR_UNAVAILABLE);
     assert(SERVO_SetAllPulseUs(1600)==SERVO_OK);ticks+=5;SERVO_Update();
     assert(SERVO_Center(7)==SERVO_OK);ticks+=5;SERVO_Update();SERVO_GetStatus(&s);
     assert(s.pulse_us[0]==1450 && s.pulse_us[1]==1550);
@@ -41,7 +41,7 @@ int main(void)
 #ifdef TEST_SERVO_INVERT
     assert(!(test_gpiod.OUTDR & 4));
     assert(SERVO_SetSideRight(0)==SERVO_OK);ticks+=5;SERVO_Update();
-    test_tim.CNT=3000;TIM3_IRQHandler();assert(test_gpiod.OUTDR & 4);
+    ticks+=10;SERVO_Update();assert((test_gpiod.OUTDR & 4));
 #endif
 #endif
     puts("servo configuration: all checks passed");return 0;

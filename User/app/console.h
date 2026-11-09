@@ -7,7 +7,7 @@
  * CONSOLE_Task() drains complete lines from the COMM driver, decodes them and
  * submits chassis and servo commands and calls stepper maintenance APIs.
  * Servo commands are queued; only the control task advances their motion and
- * the TIM3 ISR commits PWM frames. No console code writes servo registers.
+ * hardware PWM preloads take effect at timer rollover. No console code writes servo registers.
  */
 
 void CONSOLE_Init(void);

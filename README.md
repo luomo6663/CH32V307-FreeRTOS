@@ -23,7 +23,7 @@ FreeRTOS 和 WCH RISC-V 工具链，正常上电后电机保持滑行、舵机�
 | 控制台 | USART3，PB10 TX / PB11 RX，115200-8-N-1 |
 | 电机 | W1 PA2/PA3，W2 PA15/PB3，W3 PD12/PD13，W4 PD14/PD15 |
 | 编码器 | W1 PC6/PC7，W2 PD1/PD3，W3 PA8/PA9，W4 PD9/PD11 |
-| 舵机 | ARM_A/B/C = PB4/PB5/PB0，TIM3_CH1/2/3，300 Hz；ARM_SWITCH = PD2，高电平右侧 |
+| 舵机 | 逻辑 A/B/C = PB4/PB5/PB0，TIM3_CH1/2/3，300 Hz；ARM_SWITCH = PD2，高电平右侧 |
 | 转台 | PA0 STEP/TIM5_CH1，PA1 DIR |
 
 电机、舵机和步进电机必须使用各自匹配的电源，并与控制板共地。不要让电机或
@@ -32,9 +32,9 @@ FreeRTOS 和 WCH RISC-V 工具链，正常上电后电机保持滑行、舵机�
 ## 安全启动
 
 - 四路电机上电滑行，不自动转动。
-- 当前为舵机台架测试配置：每次上电选择右路（PD2 高电平），A/B/C 三路同时执行一次 1500→500→2500→1500 us 全范围动作，约 6 秒后保持中位。左臂不参与测试。
+- 上电选择右路（PD2 高电平），A/B/C 三路输出 1500 us 中位，不自动扫描，等待串口手动控制。
 - 步进转台保持停止，STEP 引脚停在低电平。
-- `SERVO HOLD` 可中止上电测试并保持当前输出；`SERVO OFF` 可关闭当前侧三路 PWM。将 `ROBOT_SERVO_BOOT_TEST` 改为 0 可取消下次上电自动动作。
+- `SERVO HOLD` 保持当前输出；`SERVO OFF` 关闭当前侧三路 PWM。上电测试已关闭（`ROBOT_SERVO_BOOT_TEST=0`）。
 - DRIVE 模式命令超时、车轮缺反馈、堵转或反馈方向错误时自动停机并锁存故障。
 
 运行期的 PID、方向、编码器符号和转台 PPR 修改只保存在 RAM，复位后恢复
@@ -133,18 +133,27 @@ text   data    bss    dec
 
 ### 舵机与转台
 
+真实 R 对应硬件标记 L（PD2=1），真实 L 对应硬件标记 R（PD2=0）。
+逻辑 A=底部 PB0、B=中间 PB5、C=爪子 PB4，已按最新实物反馈对调 A/C 输出。
+上电 R 三路均为 1500 us，不自动运动。R 限位：A 750–1500，B/C 850–1500 us。
+
 | 指令 | 说明 |
 | --- | --- |
-| `SERVO` | 查看舵机脉宽、扫描状态和定时器寄存器 |
-| `SERVO <500..2500>` | 设置当前侧 B 路脉宽，`1500` 为默认中位 |
-| `SERVO SIDE R\|L` | 选择右侧/左侧 |
-| `SERVO CENTER ALL` | 当前侧所有已配置通道回各自中位 |
-| `SERVO MOVE A 1700 1000` | A 路用 1000 ms 移到 1700 us |
-| `SERVO POSE 1500 1600 1400 1000` | 当前侧三路同时平滑移动 |
-| `SERVO OFF ALL` | 当前侧停止 PWM（不切断舵机电源） |
-| `SERVO MAP` / `SERVO HELP` | 查看接口配置或完整命令 |
-| `SERVO SWEEP [ms]` | 手动启动 1000–2000 us 扫描 |
-| `SERVO HOLD` | 停止扫描并保持当前脉宽 |
+| `SERVO` / `SERVO LIMIT` | 查看真实侧、硬件侧、限位和动作状态 |
+| `SERVO SIDE R` / `SERVO SIDE L` | 选择真实右臂／左臂 |
+| `SERVO A 1000` | 当前侧指定关节直接设定脉宽；支持 A/B/C/ALL |
+| `SERVO MOVE A 875 1000` | 缓起缓停移动，时间单位 ms |
+| `SERVO JOG A -10 500` | 相对当前目标减小 10 us，忙于处理待执行指令或预设动作时拒绝 |
+| `SERVO RESET [ms]` | R 三路回 1500，会松爪 |
+| `SERVO EXTEND [ms]` | R 水平伸出：A=875、B=1500，C保持 |
+| `SERVO RETRACT [ms]` | R 收臂：A/B=1500，C保持 |
+| `SERVO OPEN [ms]` | R 最大张开：C=1500 |
+| `SERVO CLAMP [ms]` | R 暂定适中夹持：C=1000，实际力度取决于物品 |
+| `SERVO GRIP [ms]` | R 合紧：C=850 |
+| `SERVO PICK [ms]` | R 松爪→伸出→合紧→停顿200ms→保持抓紧收臂 |
+| `SERVO HOLD` | 丢弃待执行舵机指令，取消组合动作，保持当前输出 |
+| `SERVO OFF` | 丢弃待执行舵机指令，取消动作，关闭当前侧全部 PWM |
+| `SERVO HELP` | 完整命令说明；SWEEP 已禁用 |
 | `TURN` | 查看转台位置、目标、方向和速率 |
 | `TURN <deg> [rpm]` | 转台相对移动指定角度 |
 | `TURN RUN <CW\|CCW> [rpm]` | 转台连续旋转 |
@@ -152,6 +161,9 @@ text   data    bss    dec
 | `TURN ZERO` | 把当前位置设为零 |
 | `TURN PPR <n>` | 设置转台每圈脉冲数 |
 | `TURN PULSES <n> [hz]` | 按指定频率直接发送脉冲 |
+
+预设动作时间默认 1000 ms，PICK 参数为每一步的时间。左臂只开放手动控制，
+没有标定的左臂预设会被拒绝。动作完成仅表示软件脉宽已到目标，没有位置反馈。
 
 完整硬件说明、参数和安全设计见
 [docs/MOTOR_CONTROL.md](docs/MOTOR_CONTROL.md)。
