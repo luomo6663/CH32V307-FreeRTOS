@@ -37,7 +37,9 @@ User/main.o: ../User/main.c \
  e:/MounRiver_Project/CH32V307-FreeRTOS/FreeRTOS/include/mpu_wrappers.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/FreeRTOS/include/task.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/FreeRTOS/include/list.h \
- ../User/app/log.h ../User/app/console.h ../User/app/robot_app.h
+ ../User/app/log.h ../User/app/console.h ../User/app/robot_app.h \
+ e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/servo.h \
+ e:/MounRiver_Project/CH32V307-FreeRTOS/User/config/robot_config.h
 
 e:/MounRiver_Project/CH32V307-FreeRTOS/Debug/debug.h:
 
@@ -120,3 +122,7 @@ e:/MounRiver_Project/CH32V307-FreeRTOS/FreeRTOS/include/list.h:
 ../User/app/console.h:
 
 ../User/app/robot_app.h:
+
+e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/servo.h:
+
+e:/MounRiver_Project/CH32V307-FreeRTOS/User/config/robot_config.h:

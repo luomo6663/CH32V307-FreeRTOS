@@ -173,7 +173,12 @@
  */
 #define ROBOT_STEPPER_STEPS_PER_REV          3200U
 #define ROBOT_STEPPER_DEFAULT_RPM            5.0f
-#define ROBOT_STEPPER_MAX_RPM                30.0f
+#define ROBOT_STEPPER_MAX_RPM                45.0f
+#define ROBOT_LINK_DEFAULT_RPM               45.0f
+#define ROBOT_LINK_MAX_ANGLE_DEG             135
+#define ROBOT_APP_PICK_ANGLE_DEG             135
+#define ROBOT_APP_PLACE_ANGLE_DEG           -135
+#define ROBOT_APP_TURN_RATE_HZ               2400U
 #define ROBOT_STEPPER_MIN_RPM                0.1f
 #define ROBOT_STEPPER_MAX_RATE_HZ            20000U
 #define ROBOT_STEPPER_PULSE_WIDTH_US         3U

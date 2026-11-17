@@ -4,6 +4,7 @@
 *******************************************************************************/
 
 #include "console.h"
+#include "robot_app.h"
 #include "comm.h"
 #include "log.h"
 #include "telemetry.h"
@@ -203,6 +204,10 @@ static void Console_PrintHelp(void)
     LOGF("TURN <deg> [rpm]      relative turntable move\r\n");
     LOGF("TURN RUN <CW|CCW> [rpm] continuous turntable rotation\r\n");
     LOGF("TURN STOP|ZERO|PPR [n] turntable stop/zero/pulses-per-rev\r\n");
+    LOGF("LINK ZERO|STATUS|STOP right arm and turntable coordination\r\n");
+    LOGF("LINK START <pick_deg> <place_deg> [rpm]\r\n");
+    LOGF("APP RUN|HOME|STATUS|STOP  application control\r\n");
+    LOGF("APP ARM STOW|EXTEND|OPEN|GRIP|PICK\r\n");
     LOGF("TURN PULSES <n> [hz]  direct stepper pulse move\r\n");
     LOGF("PPRCAL <pulses> <deg> turntable ppr from a measured move\r\n");
     LOGF("STEST [pulses] [hz]   stepper forward + reverse bench test\r\n");
@@ -647,6 +652,7 @@ static void Console_HandleTurn(void)
         return;
     }
 
+    ROBOT_LINK_InvalidateZero();
     if(strcmp(token, "STOP") == 0)
     {
         STEPPER_Stop();
@@ -1128,6 +1134,70 @@ static void Console_HandleVofa(void)
          (unsigned int)TELEMETRY_GetPeriodMs());
 }
 
+static void Console_HandleLink(void)
+{
+    char *token = Console_NextToken();
+    int32_t pick, place;
+    float rpm = ROBOT_LINK_DEFAULT_RPM;
+    char *rpm_token;
+
+    if(!token || (strcmp(token, "STATUS") == 0 && !Console_NextToken())) {
+        ROBOT_LINK_PrintStatus();
+    } else if(strcmp(token, "STOP") == 0 && !Console_NextToken()) {
+        ROBOT_LINK_Stop();
+        LOGF("ok link stop requested\r\n");
+    } else if(strcmp(token, "ZERO") == 0 && !Console_NextToken()) {
+        if(ROBOT_LINK_Zero()) LOGF("ok link zero set\r\n");
+        else LOGF("err: link or turntable busy\r\n");
+    } else if(strcmp(token, "START") == 0 && Console_NextInt(&pick) && Console_NextInt(&place) &&
+              (!(rpm_token = Console_NextToken()) ||
+               (Console_ParseFloat(rpm_token, &rpm) && !Console_NextToken()))) {
+        if(ROBOT_LINK_Start(pick, place, rpm)) LOGF("ok link started\r\n");
+        else LOGF("err: check zero, stations (-135..135 deg), rpm (0.1..45), chassis and right arm idle\r\n");
+    } else {
+        LOGF("usage: LINK ZERO | START <pick_deg> <place_deg> [rpm] | STATUS | STOP\r\n");
+    }
+}
+
+static void Console_HandleApp(void)
+{
+    static const struct {
+        const char *name;
+        servo_action_t action;
+    } arm[] = {
+        {"STOW", SERVO_ACTION_RETRACT}, {"EXTEND", SERVO_ACTION_EXTEND},
+        {"OPEN", SERVO_ACTION_OPEN}, {"GRIP", SERVO_ACTION_GRIP},
+        {"PICK", SERVO_ACTION_PICK}
+    };
+    char *command = Console_NextToken();
+    char *argument = Console_NextToken();
+    unsigned int i;
+
+    if(!command || (!strcmp(command, "STATUS") && !argument)) {
+        ROBOT_LINK_PrintStatus();
+        return;
+    }
+    if(!argument && !strcmp(command, "STOP")) {
+        ROBOT_LINK_Stop();
+        LOGF("ok app stop requested\r\n");
+        return;
+    }
+    if(!argument && (!strcmp(command, "RUN") || !strcmp(command, "HOME"))) {
+        if(ROBOT_APP_Run(strcmp(command, "HOME") == 0)) LOGF("ok app started\r\n");
+        else LOGF("err: check PPRCAL, LINK ZERO, chassis and right arm idle\r\n");
+        return;
+    }
+    if(argument && !strcmp(command, "ARM") && !Console_NextToken()) {
+        for(i = 0; i < sizeof(arm) / sizeof(arm[0]); i++) {
+            if(strcmp(argument, arm[i].name) != 0) continue;
+            if(ROBOT_APP_Arm(arm[i].action)) LOGF("ok app arm started\r\n");
+            else LOGF("err: check chassis, turntable and right arm idle\r\n");
+            return;
+        }
+    }
+    LOGF("usage: APP RUN|HOME|STATUS|STOP or APP ARM STOW|EXTEND|OPEN|GRIP|PICK\r\n");
+}
+
 static void Console_HandleLine(char *line)
 {
     char   *command;
@@ -1147,6 +1217,30 @@ static void Console_HandleLine(char *line)
     command = strtok(line, " \t");
     if(command == NULL)
     {
+        return;
+    }
+
+    if(strcmp(command, "APP") == 0) {
+        Console_HandleApp();
+        return;
+    }
+    if(strcmp(command, "LINK") == 0) {
+        Console_HandleLink();
+        return;
+    }
+    if(ROBOT_LINK_Active()) {
+        token = strcmp(command, "TURN") == 0 ? Console_NextToken() : NULL;
+        if(!strcmp(command, "STOP") || !strcmp(command, "S") || !strcmp(command, "X") ||
+           (token && !strcmp(token, "STOP"))) {
+            ROBOT_LINK_Stop();
+            CHASSIS_CommandStop();
+            LOGF("ok link stop requested\r\n");
+        } else if(!strcmp(command, "STATUS") || !strcmp(command, "P")) {
+            Console_PrintStatus();
+            ROBOT_LINK_PrintStatus();
+        } else {
+            LOGF("err: link active, use LINK STATUS or LINK STOP\r\n");
+        }
         return;
     }
 
@@ -1216,10 +1310,12 @@ static void Console_HandleLine(char *line)
     }
     else if(strcmp(command, "STEST") == 0)
     {
+        ROBOT_LINK_InvalidateZero();
         Console_HandleStepperTest();
     }
     else if(strcmp(command, "DIR") == 0)
     {
+        ROBOT_LINK_InvalidateZero();
         if((Console_NextInt(&a) != 0U) && ((a == 0) || (a == 1)))
         {
             if(STEPPER_SetDirLevel((uint8_t)a) == 0U)
@@ -1434,6 +1530,7 @@ static void Console_HandleLine(char *line)
     }
     else if(strcmp(command, "PPRCAL") == 0)
     {
+        ROBOT_LINK_InvalidateZero();
         int32_t pulses;
         float   degrees;
         char    buffer[16];
@@ -1465,6 +1562,7 @@ static void Console_HandleLine(char *line)
     }
     else if(strcmp(command, "STEP") == 0)
     {
+        ROBOT_LINK_InvalidateZero();
         if((Console_NextInt(&a) != 0U) && ((a == 0) || (a == 1)))
         {
             if(STEPPER_SetStepLevel((uint8_t)a) == 0U)

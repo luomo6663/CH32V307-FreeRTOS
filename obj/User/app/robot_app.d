@@ -1,9 +1,10 @@
 User/app/robot_app.o: ../User/app/robot_app.c ../User/app/robot_app.h \
+ e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/servo.h \
+ e:/MounRiver_Project/CH32V307-FreeRTOS/User/config/robot_config.h \
  ../User/app/console.h ../User/app/telemetry.h ../User/app/log.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/chassis.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/wheel_id.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/mecanum.h \
- e:/MounRiver_Project/CH32V307-FreeRTOS/User/config/robot_config.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/encoder.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/motor.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/Peripheral/inc/ch32v30x.h \
@@ -35,7 +36,6 @@ User/app/robot_app.o: ../User/app/robot_app.c ../User/app/robot_app.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/User/ch32v30x_it.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/Debug/debug.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/Peripheral/inc/ch32v30x_misc.h \
- e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/servo.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/stepper.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/FreeRTOS/include/FreeRTOS.h \
  e:/MounRiver_Project/CH32V307-FreeRTOS/User/FreeRTOSConfig.h \
@@ -49,6 +49,10 @@ User/app/robot_app.o: ../User/app/robot_app.c ../User/app/robot_app.h \
 
 ../User/app/robot_app.h:
 
+e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/servo.h:
+
+e:/MounRiver_Project/CH32V307-FreeRTOS/User/config/robot_config.h:
+
 ../User/app/console.h:
 
 ../User/app/telemetry.h:
@@ -60,8 +64,6 @@ e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/chassis.h:
 e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/wheel_id.h:
 
 e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/mecanum.h:
-
-e:/MounRiver_Project/CH32V307-FreeRTOS/User/config/robot_config.h:
 
 e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/encoder.h:
 
@@ -124,8 +126,6 @@ e:/MounRiver_Project/CH32V307-FreeRTOS/User/ch32v30x_it.h:
 e:/MounRiver_Project/CH32V307-FreeRTOS/Debug/debug.h:
 
 e:/MounRiver_Project/CH32V307-FreeRTOS/Peripheral/inc/ch32v30x_misc.h:
-
-e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/servo.h:
 
 e:/MounRiver_Project/CH32V307-FreeRTOS/User/control/stepper.h:
 
