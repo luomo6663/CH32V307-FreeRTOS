@@ -1,6 +1,6 @@
 # 固件架构说明
 
-当前版本：`v1.0.0`
+当前版本：`v2.0.0`
 
 本文档说明固件的分层结构、FreeRTOS 任务、控制数据流、实时约束和资源占用。
 硬件连接和完整命令表见 [MOTOR_CONTROL.md](MOTOR_CONTROL.md)。
@@ -73,8 +73,8 @@ tools/
 - 只有 `control` 任务执行周期性实时控制。
 - 底盘运动命令通过 `CHASSIS_Command*()` 锁存，由 `control` 任务在下一周期应用。
 - 状态通过 `CHASSIS_GetStatus()` 整体拷贝，避免读取到半更新状态。
-- 舵机命令进入 16 条 FIFO，控制任务每周期应用一条并更新运动；TIM3_CH4 在
-  PWM 低电平区间提交下一帧比较值和 PD2 路由。左右侧状态分别保存。
+- 舵机命令进入 16 条 FIFO，控制任务按队列顺序应用并更新运动。PWM 比较值经 TIM3 预装载生效；
+  切换侧时先清零输出，等待 20 ms 后切换 PD2 并恢复该侧保存的输出。
 - USART3 中断只写接收 FIFO，不调用 FreeRTOS API。
 - 控制台输出由 `LOG_Lock()` / `LOG_Unlock()` 串行化。
 
@@ -167,14 +167,7 @@ k = 半轴距 + 半轮距
 
 ## 10. 资源占用
 
-`tools/build.ps1` 的命令行构建结果：
-
-```text
-text   data    bss    dec
-53784    592  15840  70216
-```
-
-其中 BSS 包含 FreeRTOS 堆和静态状态。链接脚本预留：
+每次构建结束会输出 text、data 和 bss 大小。BSS 包含 FreeRTOS 堆和静态状态。链接脚本预留：
 
 - 256 K Flash
 - 32 K SRAM 下限

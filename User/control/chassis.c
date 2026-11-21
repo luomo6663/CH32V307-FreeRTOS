@@ -332,10 +332,28 @@ static void Chassis_UpdateDrive(void)
     float   wheel_mm_s[WHEEL_COUNT];
     float   target_rpm[WHEEL_COUNT];
     float   max_wheel_mm_s = Mecanum_WheelRpmToMmS(ROBOT_MAX_WHEEL_RPM);
+    float   vx = s_twist[0];
+    float   vy = s_twist[1];
+    float   wz = s_twist[2];
     uint8_t wheel;
 
-    Mecanum_TwistToMotorsLimited(s_twist[0], s_twist[1], s_twist[2],
-                                 max_wheel_mm_s, wheel_mm_s);
+    if((vx == 0.0f) && (wz == 0.0f) && (vy != 0.0f))
+    {
+        float scale = fabsf(vy) / ROBOT_STRAFE_TRIM_REF_MM_S;
+
+        if(vy > 0.0f)
+        {
+            vx = ROBOT_STRAFE_LEFT_VX_MM_S * scale;
+            wz = ROBOT_STRAFE_LEFT_WZ_RAD_S * scale;
+        }
+        else
+        {
+            vx = ROBOT_STRAFE_RIGHT_VX_MM_S * scale;
+            wz = ROBOT_STRAFE_RIGHT_WZ_RAD_S * scale;
+        }
+    }
+
+    Mecanum_TwistToMotorsLimited(vx, vy, wz, max_wheel_mm_s, wheel_mm_s);
 
     for(wheel = 0U; wheel < WHEEL_COUNT; wheel++)
     {

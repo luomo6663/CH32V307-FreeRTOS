@@ -23,5 +23,7 @@ void ROBOT_LINK_InvalidateZero(void);
 void ROBOT_LINK_PrintStatus(void);
 uint8_t ROBOT_APP_Run(uint8_t home_only);
 uint8_t ROBOT_APP_Arm(servo_action_t action);
+uint8_t ROBOT_APP_ArmPose(uint16_t a_us, uint16_t b_us);
+uint8_t ROBOT_APP_ArmLevel(uint16_t a_us);
 
 #endif /* __ROBOT_APP_H */

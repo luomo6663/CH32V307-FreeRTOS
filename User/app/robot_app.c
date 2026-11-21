@@ -26,20 +26,16 @@
 #define CONSOLE_TASK_STACK_WORDS    448U
 #define TELEMETRY_TASK_STACK_WORDS  512U
 
-static TaskHandle_t s_control_task;
-static TaskHandle_t s_console_task;
-static TaskHandle_t s_telemetry_task;
-
 typedef enum
 {
     LINK_IDLE, LINK_RETRACT, LINK_TURN_PICK, LINK_PICK, LINK_TURN_PLACE,
-    LINK_EXTEND, LINK_OPEN, LINK_RETRACT_END, LINK_TURN_HOME, LINK_ARM,
+    LINK_EXTEND, LINK_OPEN, LINK_RETRACT_END, LINK_TURN_HOME, LINK_ARM, LINK_LEVEL,
     LINK_STOPPING, LINK_DONE, LINK_FAULT
 } link_phase_t;
 
 static const char *const s_link_names[] = {
     "idle", "retract", "turn_pick", "pick", "turn_place", "extend",
-    "open", "retract_end", "turn_home", "arm", "stopping", "done", "fault"
+    "open", "retract_end", "turn_home", "arm", "arm_level", "stopping", "done", "fault"
 };
 static volatile link_phase_t s_link_phase;
 static volatile uint8_t s_link_stop, s_link_zero;
@@ -48,6 +44,14 @@ static int32_t s_link_pick, s_link_place;
 static uint32_t s_link_rate;
 static uint8_t s_link_home_only, s_link_return_home;
 static servo_action_t s_link_arm_action;
+static uint16_t s_link_arm_pose[3];
+static uint16_t s_link_level_start, s_link_level_target;
+static TickType_t s_link_level_started, s_link_level_duration;
+static const uint16_t s_level_poses[][2] = {
+    {1000U, 2100U}, {1200U, 1900U}, {1300U, 1800U},
+    {1400U, 1600U}, {1800U, 1200U}
+};
+#define LEVEL_POSE_COUNT (sizeof(s_level_poses) / sizeof(s_level_poses[0]))
 static uint8_t s_link_issued;
 static TickType_t s_link_deadline, s_link_settle;
 static uint8_t s_link_settling;
@@ -162,6 +166,55 @@ uint8_t ROBOT_APP_Arm(servo_action_t action)
     return 1U;
 }
 
+uint8_t ROBOT_APP_ArmPose(uint16_t a_us, uint16_t b_us)
+{
+    uint16_t a_min, a_max, b_min, b_max, center;
+    SERVO_GetLimits(0U, 0U, &a_min, &center, &a_max);
+    SERVO_GetLimits(0U, 1U, &b_min, &center, &b_max);
+    if(a_us < a_min || a_us > a_max || b_us < b_min || b_us > b_max ||
+       ROBOT_LINK_Active()) return 0U;
+    s_link_arm_pose[0] = a_us;
+    s_link_arm_pose[1] = b_us;
+    return ROBOT_APP_Arm(SERVO_ACTION_NONE);
+}
+
+static uint16_t Link_LevelB(uint16_t a_us)
+{
+    unsigned int i;
+    for(i = 1U; i < LEVEL_POSE_COUNT; i++) {
+        const uint16_t *lo = s_level_poses[i - 1U];
+        const uint16_t *hi = s_level_poses[i];
+        if(a_us <= hi[0]) {
+            uint32_t span = hi[0] - lo[0];
+            uint32_t drop = (uint32_t)(a_us - lo[0]) * (lo[1] - hi[1]);
+            return (uint16_t)(lo[1] - (drop + span / 2U) / span);
+        }
+    }
+    return s_level_poses[LEVEL_POSE_COUNT - 1U][1];
+}
+
+uint8_t ROBOT_APP_ArmLevel(uint16_t a_us)
+{
+    stepper_status_t step;
+    servo_status_t servo;
+    uint16_t current;
+    STEPPER_GetStatus(&step);
+    if(!Link_Ready(&step)) return 0U;
+    SERVO_GetStatus(&servo);
+    current = servo.saved_us[0][0];
+    if(a_us < s_level_poses[0][0] || a_us > s_level_poses[LEVEL_POSE_COUNT - 1U][0] ||
+       current < s_level_poses[0][0] || current > s_level_poses[LEVEL_POSE_COUNT - 1U][0] ||
+       servo.saved_us[0][1] != Link_LevelB(current)) return 0U;
+    s_link_level_start = current;
+    s_link_level_target = a_us;
+    s_link_level_duration = pdMS_TO_TICKS(1000U + 4U *
+        (uint32_t)(a_us > current ? a_us - current : current - a_us));
+    s_link_stop = 0U;
+    s_link_fault = "-";
+    Link_Enter(LINK_LEVEL);
+    return 1U;
+}
+
 void ROBOT_LINK_Stop(void)
 {
     taskENTER_CRITICAL();
@@ -195,6 +248,35 @@ static void Link_Abort(const char *reason)
     Link_Enter(LINK_STOPPING);
 }
 
+static void Link_UpdateLevel(TickType_t now, const servo_status_t *servo)
+{
+    TickType_t elapsed;
+    int32_t delta = (int32_t)s_link_level_target - s_link_level_start;
+    uint32_t t, blend;
+    uint16_t pulse[3];
+
+    if(!s_link_issued) {
+        s_link_level_started = now;
+        s_link_issued = 1U;
+    }
+    elapsed = now - s_link_level_started;
+    if(elapsed >= s_link_level_duration) {
+        pulse[0] = s_link_level_target;
+    } else {
+        t = (uint32_t)(((uint64_t)elapsed * 10000U) / s_link_level_duration);
+        blend = (uint32_t)(((uint64_t)t * t * (30000U - 2U * t)) / 100000000U);
+        pulse[0] = (uint16_t)(s_link_level_start + (delta * (int32_t)blend) / 10000);
+    }
+    pulse[1] = Link_LevelB(pulse[0]);
+    pulse[2] = 0U;
+    if(servo->queued) return;
+    if(servo->saved_us[0][0] != pulse[0] || servo->saved_us[0][1] != pulse[1]) {
+        if(SERVO_Move(3U, pulse, 0U) != SERVO_OK) Link_Abort("servo_rejected");
+    } else if(elapsed >= s_link_level_duration && Link_ServoIdle(servo)) {
+        Link_Enter(LINK_DONE);
+    }
+}
+
 static void Link_Update(void)
 {
     static const servo_action_t actions[] = {
@@ -226,6 +308,10 @@ static void Link_Update(void)
         else if(Link_ServoIdle(&servo)) Link_Enter(LINK_FAULT);
         return;
     }
+    if(phase == LINK_LEVEL) {
+        Link_UpdateLevel(now, &servo);
+        return;
+    }
 
     turning = phase == LINK_TURN_PICK || phase == LINK_TURN_PLACE || phase == LINK_TURN_HOME;
     target = phase == LINK_TURN_PICK ? s_link_pick :
@@ -246,6 +332,12 @@ static void Link_Update(void)
             timeout_ms = (uint32_t)budget_ms;
             if(delta && !STEPPER_MovePulses(delta, s_link_rate)) {
                 Link_Abort("turn_rejected");
+                return;
+            }
+        } else if(phase == LINK_ARM && s_link_arm_action == SERVO_ACTION_NONE) {
+            /* A lowers the arm, B compensates pitch, C retains its command. */
+            if(SERVO_Move(3U, s_link_arm_pose, ROBOT_SERVO_ACTION_MS) != SERVO_OK) {
+                Link_Abort("servo_rejected");
                 return;
             }
         } else if(SERVO_Action(phase == LINK_ARM ? s_link_arm_action : actions[phase],
@@ -306,20 +398,14 @@ static void Robot_PrintBanner(void)
          (unsigned long)MOTOR_PWM_FREQUENCY_HZ,
          (unsigned int)ROBOT_CONTROL_FREQUENCY_HZ);
 
-    LOGF(" motors  W1 PA2/PA3  W2 PA15/PB3  W3 PD12/PD13  W4 PD14/PD15\r\n");
-    LOGF(" encoder W1 PC6/PC7  W2 PD1/PD3  W3 PA8/PA9  W4 PD9/PD11\r\n");
-    LOGF(" servo   A/B/C=PB4/PB5/PB0 TIM3_CH1/2/3, %lu Hz, %u-%u us\r\n",
-         (unsigned long)SERVO_PWM_FREQUENCY_HZ,
-         (unsigned int)SERVO_SWEEP_MIN_US,
-         (unsigned int)SERVO_SWEEP_MAX_US);
-    LOGF("         ARM_SWITCH=PD2: real R=board L (HIGH), real L=board R (LOW)\r\n");
+    LOGF(" servo PWM %lu Hz | type PINS for hardware mapping\r\n",
+         (unsigned long)SERVO_PWM_FREQUENCY_HZ);
     if(ROBOT_SERVO_BOOT_TEST) {
         LOGF(" servo BOOT TEST: right A/B/C full range once, then center (~6s)\r\n");
         LOGF("       SERVO HOLD cancels motion; SERVO OFF disables PWM\r\n");
     }
     LOGF(" turntable PA0=STEP TIM5_CH1, PA1=DIR, %lu pulses/rev\r\n",
          (unsigned long)ROBOT_STEPPER_STEPS_PER_REV);
-    LOGF(" board map W1=MOTOR3 W2=MOTOR4 W3=MOTOR1 W4=MOTOR2 (type PINS)\r\n");
 
     if(CHASSIS_IsReady() == 0U)
     {
@@ -344,26 +430,19 @@ void ROBOT_APP_Init(void)
 
 void ROBOT_APP_Start(void)
 {
-    (void)xTaskCreate((TaskFunction_t)Robot_ControlTask,
-                      "control",
-                      CONTROL_TASK_STACK_WORDS,
-                      NULL,
-                      CONTROL_TASK_PRIORITY,
-                      &s_control_task);
+    BaseType_t created;
 
-    (void)xTaskCreate((TaskFunction_t)CONSOLE_Task,
-                      "console",
-                      CONSOLE_TASK_STACK_WORDS,
-                      NULL,
-                      CONSOLE_TASK_PRIORITY,
-                      &s_console_task);
+    created = xTaskCreate(Robot_ControlTask, "control", CONTROL_TASK_STACK_WORDS,
+                          NULL, CONTROL_TASK_PRIORITY, NULL);
+    configASSERT(created == pdPASS);
 
-    (void)xTaskCreate((TaskFunction_t)TELEMETRY_Task,
-                      "telemetry",
-                      TELEMETRY_TASK_STACK_WORDS,
-                      NULL,
-                      TELEMETRY_TASK_PRIORITY,
-                      &s_telemetry_task);
+    created = xTaskCreate(CONSOLE_Task, "console", CONSOLE_TASK_STACK_WORDS,
+                          NULL, CONSOLE_TASK_PRIORITY, NULL);
+    configASSERT(created == pdPASS);
+
+    created = xTaskCreate(TELEMETRY_Task, "telemetry", TELEMETRY_TASK_STACK_WORDS,
+                          NULL, TELEMETRY_TASK_PRIORITY, NULL);
+    configASSERT(created == pdPASS);
 }
 
 void vApplicationStackOverflowHook(TaskHandle_t task, char *task_name)

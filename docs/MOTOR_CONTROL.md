@@ -1,6 +1,6 @@
 # 底盘、硬件和命令说明
 
-当前版本：`v1.0.0`
+当前版本：`v2.0.0`
 
 本文档说明四轮麦轮底盘、舵机、转台的硬件连接、控制台命令、标定方法和安全
 限制。模块分层和任务模型见 [ARCHITECTURE.md](ARCHITECTURE.md)。
@@ -15,7 +15,7 @@
 | 电机 | JGB37-520，11 线编码器，32:1 减速比 |
 | 底盘 PWM | 24 kHz，TIM2 和 TIM4 |
 | 控制台 | USART3，PB10 TX / PB11 RX，115200-8-N-1 |
-| 舵机 | ARM_A/B/C = PB4/PB5/PB0，TIM3_CH1/2/3，50 Hz；ARM_SWITCH = PD2 |
+| 舵机 | 逻辑 A/B/C = PB0/PB5/PB4，TIM3_CH3/2/1，300 Hz；ARM_SWITCH = PD2 |
 | 步进转台 | PA0 STEP/TIM5_CH1，PA1 DIR（功率板 STEP_PH / STEP_EN） |
 
 ### 电机、编码器和车轮映射
@@ -38,15 +38,15 @@ W3→MOTOR1/ENC1、W4→MOTOR2/ENC2，四组电机与编码器始终成对出现
 
 ### 舵机与机械臂
 
-三路 50 Hz PWM 走 `ARM_A`（PB4/TIM3_CH1）、`ARM_B`（PB5/TIM3_CH2）、
-`ARM_C`（PB0/TIM3_CH3），`ARM_SWITCH`（PD2）送到机械臂板上的 CH440R
+三路 300 Hz PWM 由 TIM3 输出。逻辑 A/B/C 与板上 `ARM_C/B/A` 对应。
+`ARM_SWITCH`（PD2）送到机械臂板上的 CH440R
 模拟开关，用来在左右两侧的舵机之间二选一：
 
-| 通道 | 右侧舵机座 | 左侧舵机座 |
+| 板上通道 | 真实右臂（板上 L） | 真实左臂（板上 R） |
 | --- | --- | --- |
-| `ARM_A` | `H21` | `H5` |
-| `ARM_B` | `H3` | `H6` |
-| `ARM_C` | `H4` | `H7` |
+| `ARM_A`（逻辑 C） | `H5` | `H21` |
+| `ARM_B`（逻辑 B） | `H6` | `H3` |
+| `ARM_C`（逻辑 A） | `H7` | `H4` |
 
 同一时刻只有被 `SERVO SIDE R|L` 选中的一侧能收到 PWM；另一侧的位置和保持力矩不能保证，
 这是 CH440R 二选一的设计限制，不是固件 bug。
@@ -136,7 +136,7 @@ W3→MOTOR1/ENC1、W4→MOTOR2/ENC2，四组电机与编码器始终成对出现
 | `SERVO <500..2500>`（只控制当前侧 B） | 设置脉宽，`1500` 为中位 |
 | `SERVO A\|B\|C <us>` | 单独设置 ARM_A/B/C 其中一路 |
 | `SERVO ALL <us>` | 三路同时设置 |
-| `SERVO SWEEP [ms]` | 在 1000–2000 us 间手动扫描 |
+| `SERVO HOLD` / `SERVO OFF` | 取消当前动作后保持输出或关闭 PWM |
 | `SERVO HOLD` | 停止扫描并保持当前脉宽 |
 | `SERVO SIDE R\|L` | 切换 ARM_SWITCH，选择右/左侧舵机 |
 | `TURN` | 查看位置、目标、方向和脉冲速率 |
@@ -208,7 +208,6 @@ t1,r1,o1,t2,r2,o2,t3,r3,o3,t4,r4,o4
 | `V 150 0 0` | 实测约 132 mm/s，四轮闭环正常 |
 | `V 0 0 1.0` | 原地转向四轮闭环正常 |
 | `SERVO 1400/1500/1600` | 脉宽和寄存器一致 |
-| `SERVO SWEEP` / `HOLD` | 扫描和保持正常 |
 | `TURN 10 1` / `TURN -10 1` | 实测 10.013 度，并能回到零点 |
 | `TURN RUN CW 1` / `STOP` | 连续运行和停止正常 |
 

@@ -208,6 +208,8 @@ static void Console_PrintHelp(void)
     LOGF("LINK START <pick_deg> <place_deg> [rpm]\r\n");
     LOGF("APP RUN|HOME|STATUS|STOP  application control\r\n");
     LOGF("APP ARM STOW|EXTEND|OPEN|GRIP|PICK\r\n");
+    LOGF("APP ARM SYNC <A_us> <B_us>  move A and B together\r\n");
+    LOGF("APP ARM LEVEL <A_us>     follow calibrated A/B poses (1000..1800)\r\n");
     LOGF("TURN PULSES <n> [hz]  direct stepper pulse move\r\n");
     LOGF("PPRCAL <pulses> <deg> turntable ppr from a measured move\r\n");
     LOGF("STEST [pulses] [hz]   stepper forward + reverse bench test\r\n");
@@ -390,7 +392,7 @@ static void Console_PrintPins(void)
          stepper.step_port, (unsigned int)stepper.step_pin,
          stepper.step_timer, stepper.dir_port,
          (unsigned int)stepper.dir_pin);
-    LOGF("servo      ARM_A/B/C = PB4/PB5/PB0 TIM3_CH1/2/3, PD2 = ARM_SWITCH\r\n");
+    LOGF("servo      logical A/B/C = PB0/PB5/PB4 TIM3_CH3/2/1, PD2 = ARM_SWITCH\r\n");
 }
 
 /* Servo parsing is strict and independent of the legacy chassis parser. */
@@ -1153,7 +1155,9 @@ static void Console_HandleLink(void)
               (!(rpm_token = Console_NextToken()) ||
                (Console_ParseFloat(rpm_token, &rpm) && !Console_NextToken()))) {
         if(ROBOT_LINK_Start(pick, place, rpm)) LOGF("ok link started\r\n");
-        else LOGF("err: check zero, stations (-135..135 deg), rpm (0.1..45), chassis and right arm idle\r\n");
+        else LOGF("err: check zero, stations (-%d..%d deg), rpm (%.1f..%.0f), chassis and right arm idle\r\n",
+                  ROBOT_LINK_MAX_ANGLE_DEG, ROBOT_LINK_MAX_ANGLE_DEG,
+                  (double)ROBOT_STEPPER_MIN_RPM, (double)ROBOT_STEPPER_MAX_RPM);
     } else {
         LOGF("usage: LINK ZERO | START <pick_deg> <place_deg> [rpm] | STATUS | STOP\r\n");
     }
@@ -1172,6 +1176,7 @@ static void Console_HandleApp(void)
     char *command = Console_NextToken();
     char *argument = Console_NextToken();
     unsigned int i;
+    uint32_t a_us, b_us;
 
     if(!command || (!strcmp(command, "STATUS") && !argument)) {
         ROBOT_LINK_PrintStatus();
@@ -1185,6 +1190,24 @@ static void Console_HandleApp(void)
     if(!argument && (!strcmp(command, "RUN") || !strcmp(command, "HOME"))) {
         if(ROBOT_APP_Run(strcmp(command, "HOME") == 0)) LOGF("ok app started\r\n");
         else LOGF("err: check PPRCAL, LINK ZERO, chassis and right arm idle\r\n");
+        return;
+    }
+    if(argument && !strcmp(command, "ARM") && !strcmp(argument, "LEVEL")) {
+        if(Console_ServoNumber(Console_NextToken(), 1800U, &a_us) &&
+           a_us >= 1000U && !Console_NextToken()) {
+            if(ROBOT_APP_ArmLevel((uint16_t)a_us)) LOGF("ok app arm level started\r\n");
+            else LOGF("err: check idle and align A/B to a calibrated pose using APP ARM SYNC\r\n");
+        } else LOGF("usage: APP ARM LEVEL <A_us 1000..1800>\r\n");
+        return;
+    }
+    if(argument && !strcmp(command, "ARM") && !strcmp(argument, "SYNC")) {
+        if(Console_ServoNumber(Console_NextToken(), UINT16_MAX, &a_us) &&
+           Console_ServoNumber(Console_NextToken(), UINT16_MAX, &b_us) &&
+           !Console_NextToken()) {
+            if(ROBOT_APP_ArmPose((uint16_t)a_us, (uint16_t)b_us))
+                LOGF("ok app arm sync started\r\n");
+            else LOGF("err: check A/B pulse limits and chassis, turntable and right arm idle\r\n");
+        } else LOGF("usage: APP ARM SYNC <A_us> <B_us>\r\n");
         return;
     }
     if(argument && !strcmp(command, "ARM") && !Console_NextToken()) {

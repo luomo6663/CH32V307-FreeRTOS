@@ -10,7 +10,7 @@
 
 /* ---------------- firmware / RTOS ---------------- */
 
-#define ROBOT_FIRMWARE_VERSION              "1.0.0"
+#define ROBOT_FIRMWARE_VERSION              "2.0.0"
 
 #define ROBOT_CONSOLE_BAUDRATE              115200U
 #define ROBOT_CONSOLE_POLL_MS               5U
@@ -64,6 +64,13 @@
 #define ROBOT_MAX_WHEEL_RPM                 300.0f
 #define ROBOT_MAX_LINEAR_MM_S               500.0f
 #define ROBOT_MAX_YAW_RATE_RAD_S            3.0f
+
+/* Encoder-calibrated trim for pure strafe at the reference lateral speed. */
+#define ROBOT_STRAFE_TRIM_REF_MM_S           120.0f
+#define ROBOT_STRAFE_LEFT_VX_MM_S            3.0f
+#define ROBOT_STRAFE_LEFT_WZ_RAD_S          (-0.0053f)
+#define ROBOT_STRAFE_RIGHT_VX_MM_S           2.0f
+#define ROBOT_STRAFE_RIGHT_WZ_RAD_S          0.0049f
 
 /* Twist commands older than this stop the chassis while in DRIVE mode. */
 #define ROBOT_COMMAND_TIMEOUT_MS            1000U
@@ -138,7 +145,7 @@
 #define ROBOT_SERVO_BOOT_TEST                0U
 #define ROBOT_SERVO_MIN_US_TABLE             {{750U,850U,850U},{500U,500U,500U}}
 #define ROBOT_SERVO_CENTER_US_TABLE          {{1500U,1500U,1500U},{1500U,1500U,1500U}}
-#define ROBOT_SERVO_MAX_US_TABLE             {{1500U,1500U,1500U},{2500U,2500U,2500U}}
+#define ROBOT_SERVO_MAX_US_TABLE             {{1800U,2100U,1500U},{2500U,2500U,2500U}}
 /* Table row 0 = right, row 1 = left. Times are bounded to avoid wraparound. */
 #define ROBOT_SERVO_MAX_MOTION_MS            600000U
 
@@ -176,8 +183,8 @@
 #define ROBOT_STEPPER_MAX_RPM                45.0f
 #define ROBOT_LINK_DEFAULT_RPM               45.0f
 #define ROBOT_LINK_MAX_ANGLE_DEG             135
-#define ROBOT_APP_PICK_ANGLE_DEG             135
-#define ROBOT_APP_PLACE_ANGLE_DEG           -135
+#define ROBOT_APP_PICK_ANGLE_DEG             120
+#define ROBOT_APP_PLACE_ANGLE_DEG           -120
 #define ROBOT_APP_TURN_RATE_HZ               2400U
 #define ROBOT_STEPPER_MIN_RPM                0.1f
 #define ROBOT_STEPPER_MAX_RATE_HZ            20000U
